@@ -1,5 +1,6 @@
 #include "Config.h"
 #include "Logger.h"
+#include "embedded_offsets.h"   // genere par CMake (signatures integrees)
 #include <windows.h>
 #include <sstream>
 #include <cctype>
@@ -15,6 +16,60 @@ namespace {
     std::vector<QuickCommand> g_commands;
 
     std::wstring IniPath(const wchar_t* name) { return (g_folder / name).wstring(); }
+
+    // Les signatures sont integrees dans la DLL sous forme obfusquee (XOR). On les dechiffre,
+    // on les ecrit dans un fichier temporaire unique juste le temps de les lire, puis on
+    // l'ecrase et on le supprime. Aucun offsets.ini en clair n'est livre aux joueurs.
+    std::string DecodeEmbeddedOffsets() {
+        std::string out(kEmbeddedOffsetsLen, '\0');
+        for (unsigned i = 0; i < kEmbeddedOffsetsLen; ++i)
+            out[i] = static_cast<char>(kEmbeddedOffsets[i] ^ kEmbeddedOffsetsKey[i % sizeof(kEmbeddedOffsetsKey)]);
+        return out;
+    }
+
+    // Renvoie le chemin d'un fichier offsets a lire, et met cleanup=true si c'est un temporaire a effacer.
+    std::wstring ResolveOffsetsFile(bool& cleanup) {
+        cleanup = false;
+        // 1) offsets.ini a cote de la DLL : prioritaire (confort de developpement, edition a chaud)
+        const std::wstring external = IniPath(L"offsets.ini");
+        if (GetFileAttributesW(external.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            LOG_INFO("offsets.ini externe detecte, utilise a la place des signatures integrees");
+            return external;
+        }
+        // 2) sinon, les signatures integrees dans la DLL
+        if (kEmbeddedOffsetsLen == 0) {
+            LOG_WARN("Aucun offsets.ini et aucune signature integree : les modules resteront inactifs");
+            return external;   // n'existe pas : les lectures renverront les valeurs par defaut
+        }
+        wchar_t dir[MAX_PATH], file[MAX_PATH];
+        if (GetTempPathW(MAX_PATH, dir) == 0 || GetTempFileNameW(dir, L"nx", 0, file) == 0) {
+            LOG_ERROR("Fichier temporaire impossible : signatures integrees illisibles");
+            return external;
+        }
+        const std::string data = DecodeEmbeddedOffsets();
+        HANDLE h = CreateFileW(file, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+        if (h != INVALID_HANDLE_VALUE) {
+            DWORD written = 0;
+            WriteFile(h, data.data(), static_cast<DWORD>(data.size()), &written, nullptr);
+            CloseHandle(h);
+        }
+        cleanup = true;
+        return file;
+    }
+
+    void ShredAndDelete(const std::wstring& file) {
+        HANDLE h = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+        if (h != INVALID_HANDLE_VALUE) {
+            LARGE_INTEGER size{};
+            if (GetFileSizeEx(h, &size) && size.QuadPart > 0 && size.QuadPart < 1 << 20) {
+                std::string zeros(static_cast<size_t>(size.QuadPart), '\0');
+                DWORD w = 0;
+                WriteFile(h, zeros.data(), static_cast<DWORD>(zeros.size()), &w, nullptr);
+            }
+            CloseHandle(h);
+        }
+        DeleteFileW(file.c_str());
+    }
 
     std::string ReadStr(const wchar_t* file, const wchar_t* section, const wchar_t* key, const char* def = "") {
         char buf[2048];
@@ -55,7 +110,8 @@ void Config::Init(const std::filesystem::path& folder) {
 }
 
 void Config::LoadOffsets() {
-    const std::wstring f = IniPath(L"offsets.ini");
+    bool cleanup = false;
+    const std::wstring f = ResolveOffsetsFile(cleanup);
     Offsets o;
     o.playerHookSig       = ReadStr(f.c_str(), L"player", L"hook_signature");
     o.playerHookArg       = static_cast<int>(ReadInt(f.c_str(), L"player", L"hook_argument", 0));
@@ -103,7 +159,8 @@ void Config::LoadOffsets() {
     o.sprintOffset  = static_cast<ptrdiff_t>(ReadInt(f.c_str(), L"autosprint", L"sprint_offset", -1));
 
     g_offsets = std::move(o);
-    LOG_INFO("offsets.ini charge (%zu niveaux dans la chaine joueur)", g_offsets.playerChain.size());
+    if (cleanup) ShredAndDelete(f);
+    LOG_INFO("Signatures chargees (%zu niveaux dans la chaine joueur)", g_offsets.playerChain.size());
 }
 
 void Config::LoadSettings() {

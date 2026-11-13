@@ -1,0 +1,5 @@
+#pragma once
+// Genere par CMake. Signatures obfusquees (XOR) : ne rien modifier a la main.
+static const unsigned char kEmbeddedOffsets[] = { @_out@ 0 };
+static const unsigned int  kEmbeddedOffsetsLen = @_len@u;
+static const unsigned char kEmbeddedOffsetsKey[] = { 0x4E, 0x65, 0x78, 0x75, 0x73, 0x21, 0x5A, 0x6D };

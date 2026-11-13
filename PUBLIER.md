@@ -4,18 +4,32 @@ La publication est **automatique** : tu pousses un tag `vX.Y.Z` sur GitHub, GitH
 
 ## Mise en place (une seule fois)
 
-1. Crée un dépôt GitHub **public**, par exemple `Zoumi/Nexus`. Les mises à jour se téléchargent depuis ses Releases, donc il doit être public.
-2. Si le dépôt n'est pas `Zoumi/Nexus`, modifie `NEXUS_UPDATE_REPO` dans `CMakeLists.txt`. Ce n'est utile que pour les compilations locales : GitHub Actions utilise automatiquement le bon dépôt.
+1. Crée un dépôt GitHub **public**, par exemple `ZoumiSurGithub/NexusClient`. Les mises à jour se téléchargent depuis ses Releases, donc il doit être public.
+2. Si le dépôt n'est pas `ZoumiSurGithub/NexusClient`, modifie `NEXUS_UPDATE_REPO` dans `CMakeLists.txt`. Ce n'est utile que pour les compilations locales : GitHub Actions utilise automatiquement le bon dépôt.
 3. Envoie le projet :
    ```bat
    git init
    git add .
    git commit -m "Nexus 1.0.0"
    git branch -M main
-   git remote add origin https://github.com/Zoumi/Nexus.git
+   git remote add origin https://github.com/ZoumiSurGithub/NexusClient.git
    git push -u origin main
    ```
 4. Sur GitHub : *Settings → Actions → General → Workflow permissions* → **Read and write permissions**. Le workflow en a besoin pour créer les Releases.
+5. **Dépose tes signatures en secret** (elles ne seront jamais dans le dépôt public) : *Settings → Secrets and variables → Actions → New repository secret*.
+   - **Name** : `OFFSETS_INI`
+   - **Secret** : colle **tout le contenu** de ton `offsets.ini` rempli (ouvre-le, Ctrl+A, Ctrl+C).
+   - Quand tu mets à jour tes signatures (après une maj de Minecraft), modifie ce secret, puis republie.
+
+## Où vivent les signatures
+
+Les signatures sont ton travail de rétro-ingénierie ; Nexus les protège à trois niveaux :
+
+- **Jamais dans le dépôt public.** `offsets.ini` est dans `.gitignore`. Seul `offsets.example.ini` (le modèle, sans signatures) est versionné. Ta copie locale remplie reste sur ton PC.
+- **Fournies au build via le secret `OFFSETS_INI`.** GitHub reconstitue `offsets.ini` juste le temps de compiler, puis le jette.
+- **Intégrées à la DLL, obfusquées (XOR).** Elles ne sont **pas** livrées en fichier à côté de la DLL. Les joueurs reçoivent les signatures sans pouvoir les lire ni les modifier. La DLL les déchiffre en mémoire au lancement (via un fichier temporaire effacé aussitôt).
+
+> L'obfuscation XOR **ralentit** la copie, elle ne la rend pas impossible : quelqu'un de déterminé qui analyse la DLL peut retrouver les signatures. Pour un client gratuit, c'est le compromis habituel. Une protection plus forte (packer, chiffrement avec clé distante) existe mais complique la maintenance.
 
 ## Publier une version
 
@@ -36,7 +50,7 @@ La publication est **automatique** : tu pousses un tag `vX.Y.Z` sur GitHub, GitH
    ```
 3. Suis la compilation dans l'onglet **Actions** du dépôt (environ 5 minutes). La Release apparaît ensuite dans **Releases** avec :
    - `Nexus-v1.1.0.zip` : l'installation complète pour les nouveaux joueurs ;
-   - `NexusLauncher.exe`, `Nexus.dll`, `offsets.ini`, `NexusTitle.mcpack` : les fichiers mis à jour ;
+   - `NexusLauncher.exe`, `Nexus.dll`, `NexusTitle.mcpack` : les fichiers mis à jour (les signatures sont **dans** `Nexus.dll`, pas à côté) ;
    - `nexus-update.txt` : le manifeste (version, notes, empreintes SHA-256) lu par les launchers.
 
 ## Numéros de version
@@ -49,9 +63,10 @@ Les compilations locales portent la version `0.0.0-dev` et ne forcent jamais de 
 
 ## Après une mise à jour de Minecraft
 
-1. Retrouve les signatures cassées (onglet *Diagnostic* et `Nexus.log`) et corrige `offsets.ini`.
-2. Teste en local.
-3. Publie un correctif (`v1.0.1`). Tous les joueurs reçoivent le nouveau `offsets.ini` automatiquement, sans rien recompiler de leur côté.
+1. Retrouve les signatures cassées (onglet *Diagnostic* et `Nexus.log`) et corrige ton `offsets.ini` **local**.
+2. Teste en local (ton `offsets.ini` à côté de la DLL est prioritaire sur les signatures intégrées).
+3. **Mets à jour le secret `OFFSETS_INI`** avec le nouveau contenu.
+4. Ajoute une section au CHANGELOG, puis publie un correctif (`v1.0.1`). Les joueurs reçoivent la nouvelle `Nexus.dll` (signatures intégrées) automatiquement.
 
 ## Comment fonctionne la mise à jour obligatoire
 
@@ -63,7 +78,7 @@ Au lancement, `NexusLauncher.exe` :
 
 Si la mise à jour échoue, le launcher **refuse de lancer Nexus** et affiche le lien vers la Release pour une installation manuelle. S'il ne peut pas joindre GitHub (pas d'Internet), il laisse jouer avec la version installée.
 
-Le manifeste ne peut jamais contenir `client.ini`, `commands.txt` ou `Nexus.log` : les réglages des joueurs ne sont jamais écrasés.
+Le manifeste ne peut jamais contenir `client.ini`, `commands.txt` ou `Nexus.log` : les réglages des joueurs ne sont jamais écrasés. Il ne contient pas non plus `offsets.ini` : les signatures voyagent **à l'intérieur** de `Nexus.dll`.
 
 ## Bon à savoir
 

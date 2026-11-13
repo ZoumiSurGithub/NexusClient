@@ -1,5 +1,8 @@
 # Trouver les offsets et signatures
 
+> **Publication** : ton `offsets.ini` rempli reste **local** (il est dans `.gitignore`) et sert de secret `OFFSETS_INI` pour GitHub, qui l'intègre obfusqué dans la DLL. Les joueurs ne le voient jamais. Voir `PUBLIER.md`.
+
+
 Bedrock n'a pas d'API de mod et ne fournit pas de symboles. Pour lire l'armure, la DLL doit retrouver quelques fonctions du jeu par **signature** (une suite d'octets unique dans `Minecraft.Windows.exe`). Ces signatures changent avec les mises à jour du jeu. Ce guide explique comment les retrouver et les placer dans `offsets.ini`, sans recompiler.
 
 ## Outils

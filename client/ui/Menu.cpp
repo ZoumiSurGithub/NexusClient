@@ -614,28 +614,39 @@ namespace {
         if (BeginCard("##logs", "Journal du client", desc)) {
             ImGui::Dummy({ 0.f, 2.f });
 
-            // Filtres
-            static const char* levels[] = { "Tout", "Avert. + erreurs", "Erreurs" };
-            const float avail = ImGui::GetContentRegionAvail().x;
-            ImGui::SetNextItemWidth(avail * 0.45f);
-            ImGui::InputTextWithHint("##logsearch", "Rechercher...", search, sizeof(search));
-            ImGui::SameLine();
-            ImGui::BeginGroup();
-            ImGui::PushItemWidth(-FLT_MIN);
+            // Filtres : recherche a gauche, niveau a droite (largeur fixe, libelles courts)
+            static const char* levels[] = { "Tout", "Alertes", "Erreurs" };
+            const float segW = 250.f;
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - segW - 8.f);
+            ImGui::InputTextWithHint("##logsearch", "Rechercher dans le journal...", search, sizeof(search));
+            ImGui::SameLine(0.f, 8.f);
+            ImGui::BeginChild("##logseg", { segW, ImGui::GetFrameHeight() }, ImGuiChildFlags_None,
+                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground);
             Segmented("loglevel", &minLevel, levels, 3);
-            ImGui::PopItemWidth();
-            ImGui::EndGroup();
+            ImGui::EndChild();
+            ImGui::Dummy({ 0.f, 2.f });
 
-            // Lignes
-            const ImVec4 colInfo = kText, colWarn(1.f, 0.72f, 0.25f, 1.f), colErr(0.98f, 0.38f, 0.38f, 1.f);
+            // Lignes : heure | badge de niveau | message (retour a la ligne)
+            const ImVec4 colWarn(1.f, 0.72f, 0.25f, 1.f), colErr(0.98f, 0.40f, 0.40f, 1.f);
             std::string filter = search;
             for (auto& ch : filter) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
 
             ImGui::PushStyleColor(ImGuiCol_ChildBg, kSidebar);
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 10.f, 8.f });
-            ImGui::BeginChild("##loglines", { 0.f, 340.f }, ImGuiChildFlags_AlwaysUseWindowPadding);
-            ImGui::PopStyleVar();
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 6.f, 6.f });
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.f);
+            ImGui::BeginChild("##loglines", { 0.f, 330.f }, ImGuiChildFlags_AlwaysUseWindowPadding);
+            ImGui::PopStyleVar(2);
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, { 8.f, 0.f });
+
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            const float x0 = ImGui::GetCursorPosX();
+            const float timeW = ImGui::CalcTextSize("00:00:00").x;
+            const float badgeW = ImGui::CalcTextSize("ERREUR").x + 14.f;
+            const float msgX = x0 + 8.f + timeW + 10.f + badgeW + 10.f;
+            const float rowPadY = 5.f;
             std::string all;   // texte visible, pour "Copier"
+            int row = 0;
+
             for (const auto& e : entries) {
                 if (static_cast<int>(e.level) < minLevel) continue;
                 if (!filter.empty()) {
@@ -643,29 +654,56 @@ namespace {
                     for (auto& ch : low) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
                     if (low.find(filter) == std::string::npos) continue;
                 }
-                const char* tag = e.level == Logger::Level::Error ? "ERREUR" : e.level == Logger::Level::Warn ? "AVERT." : "INFO";
-                const ImVec4 col = e.level == Logger::Level::Error ? colErr : e.level == Logger::Level::Warn ? colWarn : colInfo;
+                const bool err = e.level == Logger::Level::Error, warn = e.level == Logger::Level::Warn;
+                const char* tag = err ? "ERREUR" : warn ? "ALERTE" : "INFO";
+                const ImVec4 tagCol = err ? colErr : warn ? colWarn : Accent();
+                const ImVec4 msgCol = err ? colErr : warn ? colWarn : kText;
+
+                // Ligne mise en page dans un groupe, puis fond (survol / alternance) dessine dessous
+                dl->ChannelsSplit(2);
+                dl->ChannelsSetCurrent(1);
+                const ImVec2 rowStart = ImGui::GetCursorScreenPos();
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + rowPadY);
+                ImGui::BeginGroup();
+                ImGui::SetCursorPosX(x0 + 8.f);
                 ImGui::TextColored(kTextDim, "%s", e.time.c_str());
-                ImGui::SameLine();
-                ImGui::TextColored(e.level == Logger::Level::Info ? Accent(0.9f) : col, "%-6s", tag);
-                ImGui::SameLine();
-                // Message entier, retour a la ligne automatique (aligne sous le debut du message)
-                ImGui::PushStyleColor(ImGuiCol_Text, col);
-                ImGui::PushTextWrapPos(0.f);
+                ImGui::SameLine(x0 + 8.f + timeW + 10.f);
+                {   // badge
+                    const ImVec2 bp = ImGui::GetCursorScreenPos();
+                    const ImVec2 ts = ImGui::CalcTextSize(tag);
+                    const float bh = ImGui::GetTextLineHeight();
+                    dl->AddRectFilled(bp, bp + ImVec2(badgeW, bh), U32(ImVec4(tagCol.x, tagCol.y, tagCol.z, 0.16f)), bh * 0.5f);
+                    dl->AddText(bp + ImVec2((badgeW - ts.x) * 0.5f, 0.f), U32(tagCol), tag);
+                    ImGui::Dummy({ badgeW, bh });
+                }
+                ImGui::SameLine(msgX);
+                ImGui::PushStyleColor(ImGuiCol_Text, msgCol);
+                ImGui::PushTextWrapPos(ImGui::GetContentRegionMax().x - 8.f);
                 ImGui::TextUnformatted(e.message.c_str());
                 ImGui::PopTextWrapPos();
                 ImGui::PopStyleColor();
-                if (ImGui::IsItemHovered()) {
-                    ImGui::GetWindowDrawList()->AddRectFilled(ImGui::GetItemRectMin() - ImVec2(4.f, 1.f),
-                                                              ImGui::GetItemRectMax() + ImVec2(4.f, 1.f),
-                                                              IM_COL32(255, 255, 255, 12), 4.f);
-                    ImGui::SetTooltip("Clic : copier cette ligne");
-                }
-                if (ImGui::IsItemClicked())
+                ImGui::EndGroup();
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + rowPadY);
+
+                const ImVec2 rowEnd(ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x,
+                                    ImGui::GetCursorScreenPos().y);
+                const bool hovered = ImGui::IsMouseHoveringRect(rowStart, rowEnd) && ImGui::IsWindowHovered();
+                dl->ChannelsSetCurrent(0);
+                if (hovered)          dl->AddRectFilled(rowStart, rowEnd, U32(Accent(0.14f)), 6.f);
+                else if (row % 2)     dl->AddRectFilled(rowStart, rowEnd, IM_COL32(255, 255, 255, 6), 6.f);
+                dl->ChannelsMerge();
+
+                if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                     ImGui::SetClipboardText((e.time + " [" + tag + "] " + e.message).c_str());
-                ImGui::Dummy({ 0.f, 1.f });
                 all += e.time + " [" + tag + "] " + e.message + "\n";
+                ++row;
             }
+            if (row == 0) {
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 12.f);
+                ImGui::SetCursorPosX(x0 + 8.f);
+                ImGui::TextDisabled(entries.empty() ? "Journal vide." : "Aucune ligne ne correspond au filtre.");
+            }
+            ImGui::PopStyleVar();
             if (autoScroll && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 40.f) ImGui::SetScrollHereY(1.f);
             ImGui::EndChild();
             ImGui::PopStyleColor();
@@ -673,10 +711,11 @@ namespace {
             // Actions
             ImGui::Dummy({ 0.f, 2.f });
             ImGui::Checkbox("Défilement auto", &autoScroll);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Clic sur une ligne du journal : la copier");
             const float bw = 110.f;
             ImGui::SameLine(g_cardX0 + g_cardW - bw * 3 - 16.f);
             if (ImGui::Button("Copier", { bw, 0.f })) ImGui::SetClipboardText(all.c_str());
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Copie les lignes affichées (pour me les envoyer)");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Copie toutes les lignes affichées\n(clic sur une ligne : copie cette ligne seule)");
             ImGui::SameLine();
             if (ImGui::Button("Effacer", { bw, 0.f })) Logger::ClearView();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Vide l'affichage ; le fichier Nexus.log est conservé");
@@ -949,7 +988,8 @@ void Menu::Render() {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, kSidebar);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 12.f, 18.f });
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.f);
-    ImGui::BeginChild("##sidebar", { 190.f, 0.f }, ImGuiChildFlags_AlwaysUseWindowPadding);
+    ImGui::BeginChild("##sidebar", { 190.f, 0.f }, ImGuiChildFlags_AlwaysUseWindowPadding,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     {
         const ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
         ImGui::GetWindowDrawList()->AddRectFilledMultiColor(
@@ -988,11 +1028,26 @@ void Menu::Render() {
             if (SidebarButton(kTabs[i].name, g_tab == i)) g_tab = i;
 
         // Raccourcis en bas
-        ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 92.f);
-        ImGui::TextDisabled("INSER   menu");
-        ImGui::TextDisabled("FIN       décharger");
-        ImGui::Dummy({ 0.f, 2.f });
-        ImGui::TextColored(Accent(0.75f), "par %s", "Claude");
+        // Raccourcis en bas, alignes avec le texte des onglets
+        {
+            const float indent = 16.f;
+            const float lh = ImGui::GetTextLineHeightWithSpacing();
+            ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 18.f - lh * 3.f - 6.f);
+            auto keyLine = [&](const char* key, const char* what) {
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + indent);
+                const ImVec2 p = ImGui::GetCursorScreenPos();
+                const ImVec2 ks = ImGui::CalcTextSize(key);
+                ImGui::GetWindowDrawList()->AddRectFilled(p - ImVec2(4.f, 1.f), p + ks + ImVec2(4.f, 1.f), U32(kFrame), 4.f);
+                ImGui::TextUnformatted(key);
+                ImGui::SameLine(indent + 12.f + 56.f);
+                ImGui::TextDisabled("%s", what);
+            };
+            keyLine("INSER", "menu");
+            keyLine("FIN", "décharger");
+            ImGui::Dummy({ 0.f, 6.f });
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + indent);
+            ImGui::TextColored(Accent(0.75f), "par Claude");
+        }
     }
     ImGui::EndChild();
     ImGui::PopStyleVar(2);

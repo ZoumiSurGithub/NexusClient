@@ -15,8 +15,12 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>") # /MT : 
 # En publication (GitHub Actions), la version vient du tag Git (v1.2.3 -> 1.2.3).
 # En local, "-dev" : le launcher ne force pas de mise a jour.
 set(NEXUS_VERSION "0.0.0-dev" CACHE STRING "Version de Nexus")
-set(NEXUS_UPDATE_REPO "Zoumi/Nexus" CACHE STRING "Depot GitHub (proprietaire/nom) des mises a jour")
+set(NEXUS_UPDATE_REPO "ZoumiSurGithub/NexusClient" CACHE STRING "Depot GitHub (proprietaire/nom) des mises a jour")
 configure_file(${CMAKE_SOURCE_DIR}/cmake/version.h.in ${CMAKE_BINARY_DIR}/generated/version.h @ONLY)
+
+# Integre offsets.ini (s'il existe) dans la DLL, sous forme obfusquee
+set(OFFSETS_FILE "${CMAKE_SOURCE_DIR}/offsets.ini")
+include(${CMAKE_SOURCE_DIR}/cmake/embed_offsets.cmake)
 message(STATUS "Nexus ${NEXUS_VERSION} (mises a jour : ${NEXUS_UPDATE_REPO})")
 
 include(FetchContent)
@@ -91,10 +95,13 @@ target_compile_definitions(NexusLauncher PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UN
 target_compile_options(NexusLauncher PRIVATE /W4 /utf-8 /EHsc)
 target_link_libraries(NexusLauncher PRIVATE advapi32 shell32 winhttp bcrypt)
 
-# Copie offsets.ini a cote des binaires
-add_custom_command(TARGET Nexus POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_SOURCE_DIR}/offsets.ini $<TARGET_FILE_DIR:Nexus>/offsets.ini)
+# En dev : on copie offsets.ini a cote de la DLL s'il existe (edition a chaud, prioritaire sur l'integre).
+# En release (compilation GitHub), offsets.ini vient d'un secret et reste integre dans la DLL, pas copie.
+if(EXISTS "${OFFSETS_FILE}" AND NEXUS_VERSION MATCHES "-dev")
+    add_custom_command(TARGET Nexus POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${OFFSETS_FILE} $<TARGET_FILE_DIR:Nexus>/offsets.ini)
+endif()
 add_custom_command(TARGET NexusLauncher POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${CMAKE_SOURCE_DIR}/assets/NexusTitle.mcpack $<TARGET_FILE_DIR:NexusLauncher>/NexusTitle.mcpack)

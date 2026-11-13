@@ -32,6 +32,18 @@ jobs:
             throw "CHANGELOG.md n'a pas de section '## [$v]' : ajoute les notes de version avant de publier."
           }
 
+      - name: Déposer les signatures (secret)
+        shell: pwsh
+        env:
+          OFFSETS_INI: ${{ secrets.OFFSETS_INI }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:OFFSETS_INI)) {
+            throw "Le secret OFFSETS_INI est vide. Ajoute-le dans Settings > Secrets and variables > Actions (voir PUBLIER.md)."
+          }
+          # Le secret contient le contenu complet d'offsets.ini ; il est integre dans la DLL, jamais publie.
+          $env:OFFSETS_INI | Set-Content offsets.ini -Encoding utf8NoBOM
+          Write-Host "offsets.ini reconstitue depuis le secret (non versionne, non distribue)."
+
       - name: Configurer
         run: cmake -B build -A x64 -DNEXUS_VERSION=${{ steps.v.outputs.version }} -DNEXUS_UPDATE_REPO=${{ github.repository }}
 
@@ -46,7 +58,7 @@ jobs:
           New-Item -ItemType Directory -Force $out | Out-Null
 
           # Fichiers distribues ET mis a jour automatiquement chez les joueurs
-          $files = "NexusLauncher.exe", "Nexus.dll", "offsets.ini", "NexusTitle.mcpack"
+          $files = "NexusLauncher.exe", "Nexus.dll", "NexusTitle.mcpack"
           foreach ($f in $files) { Copy-Item "build/Release/$f" $out }
 
           # Notes de version = section du CHANGELOG
@@ -82,6 +94,5 @@ jobs:
             dist/Nexus-v${{ steps.v.outputs.version }}.zip
             dist/NexusLauncher.exe
             dist/Nexus.dll
-            dist/offsets.ini
             dist/NexusTitle.mcpack
             dist/nexus-update.txt
