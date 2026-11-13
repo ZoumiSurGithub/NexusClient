@@ -1,0 +1,5 @@
+#pragma once
+// Fichier genere par CMake : ne pas modifier a la main.
+#define NEXUS_VERSION      "@NEXUS_VERSION@"
+#define NEXUS_VERSION_W    L"@NEXUS_VERSION@"
+#define NEXUS_UPDATE_REPO  L"@NEXUS_UPDATE_REPO@"

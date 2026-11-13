@@ -1,0 +1,8 @@
+build/
+out/
+.vs/
+*.log
+client.ini
+dist/
+update/
+*.old
