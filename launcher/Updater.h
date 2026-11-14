@@ -8,9 +8,12 @@
 // Format (une ligne par entree) :
 //   version=1.2.0
 //   note=Texte du changelog (une ligne par note)
-//   file=Nexus.dll|<sha256>
-// Si la version publiee est plus recente, chaque fichier est telecharge, verifie
-// (SHA-256), puis remplace ; le launcher se relance ensuite tout seul.
+//   package=Nexus-v1.2.0.zip|<sha256>
+//   apply=Nexus.dll
+//   apply=NexusLauncher.exe
+// Si la version publiee est plus recente, le zip est telecharge, son empreinte
+// SHA-256 verifiee, puis les fichiers "apply" en sont extraits et remplaces ;
+// le launcher se relance ensuite tout seul.
 // Les fichiers du joueur (client.ini, commands.txt, Nexus.log) ne sont jamais touches.
 namespace Updater {
     enum class Result {

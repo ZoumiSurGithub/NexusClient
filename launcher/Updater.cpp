@@ -99,8 +99,9 @@ namespace {
     struct Manifest {
         std::string version;
         std::vector<std::string> notes;
-        struct File { std::string name, sha256; };
-        std::vector<File> files;
+        std::string packageName;    // ex. "Nexus-v1.1.0.zip"
+        std::string packageSha;     // SHA-256 du zip
+        std::vector<std::string> apply;   // fichiers a extraire du zip et a remplacer
     };
 
     // Seuls des noms de fichiers simples sont acceptes (pas de chemin, pas de "..")
@@ -121,22 +122,64 @@ namespace {
             const std::string key = line.substr(0, eq), val = line.substr(eq + 1);
             if (key == "version") m.version = val;
             else if (key == "note") m.notes.push_back(val);
-            else if (key == "file") {
+            else if (key == "package") {
                 const size_t bar = val.find('|');
                 if (bar == std::string::npos) return false;
-                Manifest::File f{ val.substr(0, bar), val.substr(bar + 1) };
-                for (auto& c : f.sha256) c = (char)tolower((unsigned char)c);
-                if (!SafeName(f.name) || f.sha256.size() != 64) return false;
-                m.files.push_back(f);
+                m.packageName = val.substr(0, bar);
+                m.packageSha = val.substr(bar + 1);
+                for (auto& c : m.packageSha) c = (char)tolower((unsigned char)c);
+                if (!SafeName(m.packageName) || m.packageSha.size() != 64) return false;
+            }
+            else if (key == "apply") {
+                if (!SafeName(val)) return false;
+                m.apply.push_back(val);
             }
         }
-        return !m.version.empty() && !m.files.empty();
+        return !m.version.empty() && !m.packageName.empty() && !m.apply.empty();
+    }
+
+    // Extrait des fichiers precis d'un zip vers un dossier (PowerShell Expand-Archive, toujours present).
+    bool ExtractZip(const fs::path& zip, const fs::path& dest) {
+        std::wstring cmd = L"powershell.exe -NoProfile -NonInteractive -Command \"";
+        cmd += L"Expand-Archive -LiteralPath '" + zip.wstring() + L"' -DestinationPath '" + dest.wstring() + L"' -Force\"";
+        STARTUPINFOW si{ sizeof(si) };
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION pi{};
+        std::vector<wchar_t> buf(cmd.begin(), cmd.end()); buf.push_back(0);
+        if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+            return false;
+        WaitForSingleObject(pi.hProcess, 60000);
+        DWORD code = 1;
+        GetExitCodeProcess(pi.hProcess, &code);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return code == 0;
     }
 
     void ShowManualHelp() {
         wprintf(L"\n    Telecharge la derniere version a la main :\n    https://github.com/%s/releases/latest\n\n",
                 NEXUS_UPDATE_REPO);
     }
+
+    // Anti-boucle : on note la derniere version qu'on a installee. Si, apres installation,
+    // le launcher se declare toujours plus ancien que cette version (build incoherent),
+    // on ne reinstalle pas une deuxieme fois : on lance le jeu.
+    fs::path MarkerPath(const fs::path& dir) { return dir / L".nexus_update_state"; }
+
+    std::string ReadMarker(const fs::path& dir) {
+        std::ifstream in(MarkerPath(dir), std::ios::binary);
+        std::string v;
+        std::getline(in, v);
+        while (!v.empty() && (v.back() == '\r' || v.back() == '\n' || v.back() == ' ')) v.pop_back();
+        return v;
+    }
+    void WriteMarker(const fs::path& dir, const std::string& v) {
+        std::ofstream out(MarkerPath(dir), std::ios::binary | std::ios::trunc);
+        out << v;
+        SetFileAttributesW(MarkerPath(dir).c_str(), FILE_ATTRIBUTE_HIDDEN);
+    }
+    void ClearMarker(const fs::path& dir) { std::error_code ec; fs::remove(MarkerPath(dir), ec); }
 }
 
 void Updater::CleanupOldFiles(const fs::path& dir) {
@@ -169,7 +212,17 @@ Updater::Result Updater::Run(const fs::path& dir, const fs::path& selfExe) {
     }
     if (!IsNewer(m.version, local)) {
         Say(L"Nexus est a jour (version %s).", NEXUS_VERSION_W);
+        ClearMarker(dir);
         return Result::UpToDate;
+    }
+
+    // Deja installee cette session/ce chainage : ne pas reinstaller en boucle
+    if (ReadMarker(dir) == m.version) {
+        Say(L"La mise a jour %s a deja ete installee, mais ce launcher se declare encore %s.",
+            Widen(m.version).c_str(), NEXUS_VERSION_W);
+        Say(L"Build incoherent : la release n'a probablement pas ete compilee par GitHub Actions.");
+        Say(L"On lance le jeu avec les fichiers installes (pas de nouvelle tentative).");
+        return Result::Offline;   // on joue, sans boucler
     }
 
     // ---- Mise a jour obligatoire ----------------------------------------------------
@@ -184,33 +237,47 @@ Updater::Result Updater::Run(const fs::path& dir, const fs::path& selfExe) {
     fs::remove_all(staging, ec);
     fs::create_directories(staging, ec);
 
-    // 1. Telechargement + verification de chaque fichier
+    // 1. Telechargement du zip, verification de son empreinte, puis extraction
     const std::wstring tagBase = base + L"/releases/download/v" + Widen(m.version) + L"/";
-    for (const auto& f : m.files) {
-        Say(L"Telechargement de %s...", Widen(f.name).c_str());
-        std::string data;
-        if (!HttpGet(tagBase + Widen(f.name), data, status) || status != 200) {
-            Say(L"Echec du telechargement de %s (code %lu).", Widen(f.name).c_str(), status);
-            ShowManualHelp();
-            return Result::Failed;
-        }
-        if (Sha256Hex(data) != f.sha256) {
-            Say(L"%s est corrompu (empreinte SHA-256 differente) : mise a jour annulee.", Widen(f.name).c_str());
-            ShowManualHelp();
-            return Result::Failed;
-        }
-        std::ofstream out(staging / Widen(f.name), std::ios::binary);
+    Say(L"Telechargement de %s...", Widen(m.packageName).c_str());
+    std::string data;
+    if (!HttpGet(tagBase + Widen(m.packageName), data, status) || status != 200) {
+        Say(L"Echec du telechargement (code %lu).", status);
+        ShowManualHelp();
+        return Result::Failed;
+    }
+    if (Sha256Hex(data) != m.packageSha) {
+        Say(L"Le fichier telecharge est corrompu (empreinte SHA-256 differente) : mise a jour annulee.");
+        ShowManualHelp();
+        return Result::Failed;
+    }
+    const fs::path zipPath = staging / Widen(m.packageName);
+    {
+        std::ofstream out(zipPath, std::ios::binary);
         out.write(data.data(), static_cast<std::streamsize>(data.size()));
         if (!out) { Say(L"Ecriture impossible dans %s.", staging.c_str()); return Result::Failed; }
+    }
+    Say(L"Extraction...");
+    if (!ExtractZip(zipPath, staging)) {
+        Say(L"Extraction impossible du paquet de mise a jour.");
+        ShowManualHelp();
+        return Result::Failed;
+    }
+    for (const auto& name : m.apply) {
+        if (!fs::exists(staging / Widen(name))) {
+            Say(L"%s manque dans le paquet de mise a jour.", Widen(name).c_str());
+            ShowManualHelp();
+            return Result::Failed;
+        }
     }
 
     // 2. Remplacement. Un .exe en cours d'execution ou une DLL chargee ne peuvent pas etre
     //    supprimes, mais peuvent etre renommes : l'ancien fichier devient *.old.
     std::vector<std::pair<fs::path, fs::path>> done;   // (cible, sauvegarde) pour annuler en cas d'echec
-    for (const auto& f : m.files) {
-        const fs::path target = dir / Widen(f.name);
+    for (const auto& name : m.apply) {
+        const fs::path target = dir / Widen(name);
         const fs::path backup = fs::path(target).concat(L".old");
-        const fs::path fresh = staging / Widen(f.name);
+        const fs::path fresh = staging / Widen(name);
 
         if (fs::exists(target)) {
             DeleteFileW(backup.c_str());
@@ -233,6 +300,7 @@ Updater::Result Updater::Run(const fs::path& dir, const fs::path& selfExe) {
     fs::remove_all(staging, ec);
 
     // 3. Relance du nouveau launcher
+    WriteMarker(dir, m.version);   // anti-boucle : on retient ce qu'on vient d'installer
     Say(L"Mise a jour %s installee ! Redemarrage du launcher...", Widen(m.version).c_str());
     std::wstring cmd = L"\"" + selfExe.wstring() + L"\" --updated";
     STARTUPINFOW si{ sizeof(si) };

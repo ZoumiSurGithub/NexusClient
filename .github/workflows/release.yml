@@ -67,22 +67,22 @@ jobs:
           $notes = $m.Groups[1].Value.Trim()
           $notes | Set-Content "$out/notes.md" -Encoding utf8
 
-          # Manifeste lu par le launcher
+          # Zip unique : installation pour les joueurs ET source des mises a jour
+          Copy-Item JOUEURS.md "$out/LISEZMOI.md"
+          $zipName = "Nexus-v$v.zip"
+          $zipFiles = $files + "LISEZMOI.md" | ForEach-Object { "$out/$_" }
+          Compress-Archive -Path $zipFiles -DestinationPath "$out/$zipName" -Force
+
+          # Manifeste lu par le launcher (version, notes, zip + fichiers a remplacer)
           $manifest = @("version=$v")
           foreach ($line in ($notes -split "`r?`n")) {
             $t = $line.Trim().TrimStart('-', '*').Trim()
             if ($t) { $manifest += "note=- $t" }
           }
-          foreach ($f in $files) {
-            $h = (Get-FileHash "$out/$f" -Algorithm SHA256).Hash.ToLower()
-            $manifest += "file=$f|$h"
-          }
+          $zipHash = (Get-FileHash "$out/$zipName" -Algorithm SHA256).Hash.ToLower()
+          $manifest += "package=$zipName|$zipHash"
+          foreach ($f in $files) { $manifest += "apply=$f" }
           $manifest | Set-Content "$out/nexus-update.txt" -Encoding utf8NoBOM
-
-          # Zip de premiere installation
-          Copy-Item JOUEURS.md "$out/LISEZMOI.md"
-          $zipFiles = $files + "LISEZMOI.md" | ForEach-Object { "$out/$_" }
-          Compress-Archive -Path $zipFiles -DestinationPath "$out/Nexus-v$v.zip" -Force
           Get-ChildItem $out
 
       - name: Publier
@@ -92,7 +92,4 @@ jobs:
           body_path: dist/notes.md
           files: |
             dist/Nexus-v${{ steps.v.outputs.version }}.zip
-            dist/NexusLauncher.exe
-            dist/Nexus.dll
-            dist/NexusTitle.mcpack
             dist/nexus-update.txt

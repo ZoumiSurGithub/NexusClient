@@ -48,10 +48,9 @@ Les signatures sont ton travail de rétro-ingénierie ; Nexus les protège à tr
    git tag v1.1.0
    git push origin main v1.1.0
    ```
-3. Suis la compilation dans l'onglet **Actions** du dépôt (environ 5 minutes). La Release apparaît ensuite dans **Releases** avec :
-   - `Nexus-v1.1.0.zip` : l'installation complète pour les nouveaux joueurs ;
-   - `NexusLauncher.exe`, `Nexus.dll`, `NexusTitle.mcpack` : les fichiers mis à jour (les signatures sont **dans** `Nexus.dll`, pas à côté) ;
-   - `nexus-update.txt` : le manifeste (version, notes, empreintes SHA-256) lu par les launchers.
+3. Suis la compilation dans l'onglet **Actions** du dépôt (environ 5 minutes). La Release ne contient que **deux fichiers**, pour rester simple côté joueurs :
+   - **`Nexus-v1.1.0.zip`** : ce que les joueurs téléchargent et extraient (il sert aussi de source aux mises à jour) ;
+   - `nexus-update.txt` : le petit manifeste lu par les launchers (version, notes, empreinte du zip). Les joueurs l'ignorent.
 
 ## Numéros de version
 
@@ -72,13 +71,13 @@ Les compilations locales portent la version `0.0.0-dev` et ne forcent jamais de 
 
 Au lancement, `NexusLauncher.exe` :
 1. lit `https://github.com/<dépôt>/releases/latest/download/nexus-update.txt` ;
-2. si la version est plus récente que la sienne, télécharge chaque fichier listé et **vérifie son SHA-256** ;
-3. renomme les anciens fichiers en `.old`, ce qui fonctionne même si le launcher tourne ou si la DLL est chargée dans le jeu, met les nouveaux à la place, puis se relance ;
+2. si la version est plus récente que la sienne, télécharge le **zip** de la release et **vérifie son SHA-256** ;
+3. en extrait les fichiers listés (`apply=...`), renomme les anciens en `.old` — ce qui marche même si le launcher tourne ou si la DLL est chargée dans le jeu — met les nouveaux à la place, puis se relance ;
 4. supprime les `.old` au lancement suivant.
 
 Si la mise à jour échoue, le launcher **refuse de lancer Nexus** et affiche le lien vers la Release pour une installation manuelle. S'il ne peut pas joindre GitHub (pas d'Internet), il laisse jouer avec la version installée.
 
-Le manifeste ne peut jamais contenir `client.ini`, `commands.txt` ou `Nexus.log` : les réglages des joueurs ne sont jamais écrasés. Il ne contient pas non plus `offsets.ini` : les signatures voyagent **à l'intérieur** de `Nexus.dll`.
+Le manifeste ne peut jamais désigner `client.ini`, `commands.txt`, `Nexus.log` ni `offsets.ini` : les réglages des joueurs ne sont jamais écrasés, et les signatures voyagent **à l'intérieur** de `Nexus.dll` (dans le zip).
 
 ## Bon à savoir
 
