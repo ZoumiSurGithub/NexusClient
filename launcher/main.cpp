@@ -147,7 +147,10 @@ int wmain(int argc, wchar_t** argv) {
     wprintf(L"\n");
 
     fs::path dll = exeDir / kDllName;
-    if (argc > 1) dll = fs::absolute(argv[1]); // option : chemin de DLL personnalise
+    // Option : chemin de DLL personnalise. On ignore les drapeaux (--updated, etc.).
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i][0] != L'-') { dll = fs::absolute(argv[i]); break; }
+    }
 
     if (!fs::exists(dll)) {
         Info(L"DLL introuvable : %s", dll.c_str());
