@@ -10,3 +10,7 @@ Chaque version publiée doit avoir sa section ici **avant** de pousser le tag : 
 - Chat : envoi de messages, commandes rapides et pré-commandes à côté du chat
 - Rich Presence Discord (serveur, joueurs connectés, ping)
 - Mises à jour automatiques obligatoires
+
+## [1.1.0] - 2026-11-14
+
+- Changement du système de signature.
