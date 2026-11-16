@@ -137,7 +137,7 @@ constexpr const char* kDiscordImage = "discord_nexus";   // Art Asset du logo Ne
 
 struct Settings {
     // HUD d'armure
-    bool  armorEnabled = true;
+    bool  armorEnabled = false;
     float armorX = 10.f, armorY = 200.f;
     int   armorAnchor = 0;       // 0 libre, 1..6 coins/bords, 7/8 gauche/droite de la hotbar
     float armorMargin = 0.f;     // decalage horizontal signe
@@ -178,7 +178,7 @@ struct Settings {
     bool  showOwnNametag = true;
 
     // Zoom
-    bool  zoomEnabled = true;
+    bool  zoomEnabled = false;
     int   zoomKey = 'C';          // code de touche virtuel (souris : 4 = molette, 5/6 = boutons lateraux)
     int   zoomMode = 0;           // 0 = maintenir, 1 = basculer
     float zoomFactor = 4.f;       // x2 a x10
@@ -192,7 +192,7 @@ struct Settings {
     float zoomHudScale = 1.f;
 
     // Barres de vie
-    bool  healthEnabled = true;
+    bool  healthEnabled = false;
     bool  hpPlayers = false, hpAnimals = true, hpMonsters = true, hpOthers = false;  // joueurs: vie non fiable (serveur)
     float hpMaxDistance = 24.f;
     bool  hpThroughWalls = false;   // false = occlusion active (pas de barre a travers les murs)
@@ -206,7 +206,7 @@ struct Settings {
     bool  thirdPersonNametag = false;
 
     // CPS & Combo (interrupteur maitre du panneau)
-    bool  cpsComboEnabled = true;
+    bool  cpsComboEnabled = false;
     bool  reachEnabled = false;      // affiche ta portee sur ta cible (blocs)
     bool  reachTakenEnabled = false; // affiche la portee des coups que tu recois (blocs)
     // CPS
@@ -240,7 +240,7 @@ struct Settings {
 
     // Chat
     int   chatKey = 'T';      // touche "Ouvrir le chat" du jeu (code virtuel)
-    bool  chatOverlay = true; // panneau de pre-commandes quand le chat du jeu est ouvert
+    bool  chatOverlay = false; // panneau de pre-commandes quand le chat du jeu est ouvert
     int   chatOverlaySide = 0;      // 0 = droite, 1 = gauche
     float chatOverlayBottom = 90.f; // distance au bas de l'ecran (au-dessus de la barre de saisie)
 

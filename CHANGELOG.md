@@ -2,6 +2,15 @@
 
 Chaque version publiée doit avoir sa section ici **avant** de pousser le tag : c'est ce texte que les joueurs voient dans le launcher au moment de la mise à jour (une ligne par point).
 
+## [0.0.2] - 2026-11-16
+
+- Par défaut, seuls le compteur FPS et la Rich Presence Discord sont activés — les autres modules s'activent à la demande
+- Connexions rapides plus compactes, centrées et toujours visibles en haut du launcher, quel que soit l'onglet
+- Logos des serveurs affichés sans déformation (recadrage propre), quels que soient leur taille et leur format (PNG, JPG…)
+- Barre latérale des onglets fixe (plus de défilement intempestif)
+- Notes de version incluses dans l'installation (onglet Nouveautés)
+- Finitions et corrections d'interface
+
 ## [0.0.1] - 2026-11-16
 
 Première version publique de Nexus, client Minecraft Bedrock (Windows).

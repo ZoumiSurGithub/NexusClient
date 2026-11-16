@@ -58,7 +58,8 @@ jobs:
           New-Item -ItemType Directory -Force $out | Out-Null
 
           # Fichiers distribues ET mis a jour automatiquement chez les joueurs
-          $files = "NexusLauncher.exe", "Nexus.dll", "NexusTitle.mcpack"
+          # (CHANGELOG.md est copie a cote de l'exe par CMake : il alimente l'onglet Nouveautes)
+          $files = "NexusLauncher.exe", "Nexus.dll", "NexusTitle.mcpack", "CHANGELOG.md"
           foreach ($f in $files) { Copy-Item "build/Release/$f" $out }
 
           # Notes de version = section du CHANGELOG
