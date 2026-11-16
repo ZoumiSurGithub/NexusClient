@@ -166,33 +166,68 @@ static void SectionLabel(const char* txt) {
     ImGui::Dummy(ImVec2(0, 2));
 }
 
-// Bouton principal arrondi avec surbrillance au survol (dessin personnalise).
+// Valeur animee par widget : avance en douceur (ease exponentiel) vers 'target' a chaque image.
+// Rend les survols/clics fluides malgre le mode immediat d'ImGui.
+static float Anim(ImGuiID id, float target, float speed = 14.f) {
+    static std::map<ImGuiID, float> store;
+    float& v = store[id];
+    float dt = ImGui::GetIO().DeltaTime; if (dt > 0.1f) dt = 0.1f;
+    v += (target - v) * (1.f - std::exp(-speed * dt));
+    if (std::fabs(v - target) < 0.0015f) v = target;
+    return v;
+}
+static ImU32 LerpCol(ImU32 a, ImU32 b, float t) {
+    const ImVec4 ca = ImGui::ColorConvertU32ToFloat4(a), cb = ImGui::ColorConvertU32ToFloat4(b);
+    return ImGui::ColorConvertFloat4ToU32(ImVec4(ca.x + (cb.x - ca.x) * t, ca.y + (cb.y - ca.y) * t,
+                                                 ca.z + (cb.z - ca.z) * t, ca.w + (cb.w - ca.w) * t));
+}
+
+// Bouton principal arrondi, anime : halo + brillance au survol, leger ecrasement au clic.
 static bool AccentButton(const char* id, const char* label, const ImVec2& size, bool enabled) {
     ImGui::BeginDisabled(!enabled);
-    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
     const bool pressed = ImGui::InvisibleButton(id, size);
     const bool hov = ImGui::IsItemHovered(), act = ImGui::IsItemActive();
+    const ImGuiID iid = ImGui::GetItemID();
+    const float hv = enabled ? Anim(iid, hov ? 1.f : 0.f) : 0.f;
+    const float av = enabled ? Anim(iid + 1u, act ? 1.f : 0.f, 24.f) : 0.f;
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 pmax(p.x + size.x, p.y + size.y);
+    const float ins = 1.8f * av;                                   // ecrasement au clic
+    const ImVec2 p(p0.x + ins, p0.y + ins), pmax(p0.x + size.x - ins, p0.y + size.y - ins);
     const float r = 11.f;
-    if (enabled && hov)   // halo
-        dl->AddRectFilled(ImVec2(p.x - 4, p.y - 4), ImVec2(pmax.x + 4, pmax.y + 4), IM_COL32(143, 99, 235, 55), r + 4);
-    const ImU32 base = !enabled ? IM_COL32(48, 46, 64, 255)
-                       : act    ? IM_COL32(120, 82, 210, 255)
-                       : hov     ? kAccentHi : kAccent;
+    if (enabled && hv > 0.01f) {                                   // halo qui respire
+        const float e = 5.f * hv;
+        dl->AddRectFilled(ImVec2(p.x - e, p.y - e), ImVec2(pmax.x + e, pmax.y + e),
+                          IM_COL32(143, 99, 235, (int)(70 * hv)), r + e);
+    }
+    ImU32 base = !enabled ? IM_COL32(48, 46, 64, 255) : LerpCol(kAccent, kAccentHi, hv);
+    if (enabled) base = LerpCol(base, IM_COL32(120, 82, 210, 255), av);
     dl->AddRectFilled(p, pmax, base, r);
-    dl->AddRect(p, pmax, IM_COL32(255, 255, 255, 28), r, 0, 1.2f);  // liseret clair
+    dl->AddRect(p, pmax, IM_COL32(255, 255, 255, (int)(28 + 42 * hv)), r, 0, 1.2f);
     const ImVec2 ts = ImGui::CalcTextSize(label);
-    dl->AddText(ImVec2(p.x + (size.x - ts.x) * 0.5f, p.y + (size.y - ts.y) * 0.5f),
+    dl->AddText(ImVec2(p0.x + (size.x - ts.x) * 0.5f, p0.y + (size.y - ts.y) * 0.5f),
                 IM_COL32(255, 255, 255, enabled ? 255 : 140), label);
     ImGui::EndDisabled();
     return pressed && enabled;
 }
 
-// Bouton secondaire arrondi (texte).
+// Bouton secondaire arrondi, anime (fond qui s'eclaircit au survol/clic).
 static bool GhostButton(const char* label, const ImVec2& size, bool enabled) {
     ImGui::BeginDisabled(!enabled);
-    const bool pressed = ImGui::Button(label, size);
+    ImVec2 sz = size; if (sz.x <= 0.f) sz.x = ImGui::GetContentRegionAvail().x;
+    const bool pressed = ImGui::InvisibleButton(label, sz);
+    const bool hov = ImGui::IsItemHovered(), act = ImGui::IsItemActive();
+    const ImGuiID iid = ImGui::GetItemID();
+    const float hv = enabled ? Anim(iid, hov ? 1.f : 0.f) : 0.f;
+    const float av = enabled ? Anim(iid + 1u, act ? 1.f : 0.f, 24.f) : 0.f;
+    const ImVec2 rmin = ImGui::GetItemRectMin(), rmax = ImGui::GetItemRectMax();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float r = 9.f;
+    dl->AddRectFilled(rmin, rmax, IM_COL32(150, 140, 200, enabled ? (int)(26 + 38 * hv + 22 * av) : 14), r);
+    dl->AddRect(rmin, rmax, IM_COL32(255, 255, 255, (int)(16 + 36 * hv)), r, 0, 1.f);
+    const ImVec2 ts = ImGui::CalcTextSize(label);
+    dl->AddText(ImVec2(rmin.x + (sz.x - ts.x) * 0.5f, rmin.y + (sz.y - ts.y) * 0.5f),
+                IM_COL32(230, 230, 245, enabled ? 255 : 140), label);
     ImGui::EndDisabled();
     return pressed && enabled;
 }
@@ -274,21 +309,28 @@ static std::string Narrow(const std::wstring& w) {
     return s;
 }
 
-// Onglet de la barre laterale : bouton pleine largeur, surligne + barre d'accent si actif.
+// Onglet de la barre laterale, anime : fond qui apparait et barre d'accent qui grandit.
 static bool SidebarTab(const char* label, bool selected) {
-    ImGui::PushStyleColor(ImGuiCol_Button, selected ? ImVec4(0.17f, 0.15f, 0.27f, 1.f) : ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, selected ? ImVec4(0.21f, 0.18f, 0.32f, 1.f) : ImVec4(1, 1, 1, 0.05f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.08f));
-    ImGui::PushStyleColor(ImGuiCol_Text, selected ? ImVec4(0.96f, 0.95f, 1.f, 1.f) : ImVec4(0.72f, 0.72f, 0.80f, 1.f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ButtonTextAlign, ImVec2(0.f, 0.5f));
-    const bool r = ImGui::Button(label, ImVec2(-FLT_MIN, 38.f));
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(4);
-    if (selected) {
-        const ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
-        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(mn.x, mn.y + 8.f), ImVec2(mn.x + 3.f, mx.y - 8.f), kAccent, 2.f);
+    const ImVec2 sz(ImGui::GetContentRegionAvail().x, 38.f);
+    const bool pressed = ImGui::InvisibleButton(label, sz);
+    const bool hov = ImGui::IsItemHovered();
+    const ImGuiID iid = ImGui::GetItemID();
+    const float hv = Anim(iid, hov ? 1.f : 0.f);
+    const float sv = Anim(iid + 1u, selected ? 1.f : 0.f, 16.f);
+    const ImVec2 rmin = ImGui::GetItemRectMin(), rmax = ImGui::GetItemRectMax();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const int bgA = (int)(sv * 40 + hv * 16);
+    if (bgA > 0) dl->AddRectFilled(rmin, rmax, IM_COL32(150, 120, 230, bgA), 8.f);
+    const float barH = (sz.y - 16.f) * sv;                        // barre d'accent qui grandit
+    if (barH > 0.5f) {
+        const float cy = rmin.y + sz.y * 0.5f;
+        dl->AddRectFilled(ImVec2(rmin.x, cy - barH * 0.5f), ImVec2(rmin.x + 3.f, cy + barH * 0.5f), kAccent, 2.f);
     }
-    return r;
+    const float slide = 2.f * hv + 3.f * sv;                      // le texte glisse legerement
+    ImVec4 tc(0.72f + 0.24f * sv, 0.72f + 0.23f * sv, 0.80f + 0.20f * sv, 1.f);
+    const ImVec2 ts = ImGui::CalcTextSize(label);
+    dl->AddText(ImVec2(rmin.x + 12.f + slide, rmin.y + (sz.y - ts.y) * 0.5f), ImGui::ColorConvertFloat4ToU32(tc), label);
+    return pressed;
 }
 
 // Une tuile "connexion rapide" (logo ou icone serveur par defaut). Renvoie true au clic.
@@ -299,13 +341,17 @@ static bool ServerTile(const Launcher::ServerShortcut& sv, float tile) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const bool clicked = ImGui::InvisibleButton("##logo", ImVec2(tile, tile));
     const bool hov = ImGui::IsItemHovered();
-    const ImVec2 pmax(p.x + tile, p.y + tile);
-    dl->AddRectFilled(p, pmax, hov ? IM_COL32(60, 52, 96, 255) : IM_COL32(40, 35, 66, 255), 10.f);
+    const float hv = Anim(ImGui::GetItemID(), hov ? 1.f : 0.f);   // animation de survol
+    const float grow = 3.f * hv;                                   // la tuile se souleve au survol
+    const ImVec2 q(p.x - grow, p.y - grow), pmax(p.x + tile + grow, p.y + tile + grow);
+    if (hv > 0.01f)                                                // ombre/halo sous la tuile
+        dl->AddRectFilled(ImVec2(q.x - 2, q.y + 2), ImVec2(pmax.x + 2, pmax.y + 4), IM_COL32(143, 99, 235, (int)(50 * hv)), 12.f);
+    dl->AddRectFilled(q, pmax, LerpCol(IM_COL32(40, 35, 66, 255), IM_COL32(64, 55, 100, 255), hv), 10.f);
     if (logo.srv) {
-        dl->AddImageRounded((ImTextureID)logo.srv, p, pmax, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 10.f);
+        dl->AddImageRounded((ImTextureID)logo.srv, q, pmax, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 10.f);
     } else {
-        dl->AddRect(p, pmax, kAccent, 10.f, 0, 1.5f);
-        const float cxp = p.x + tile * 0.5f, cyp = p.y + tile * 0.5f;
+        dl->AddRect(q, pmax, kAccent, 10.f, 0, 1.5f);
+        const float cxp = (q.x + pmax.x) * 0.5f, cyp = (q.y + pmax.y) * 0.5f;
         const float uw = 34.f, uh = 11.f, ug = 5.f;
         for (int k = 0; k < 2; ++k) {
             const float y0 = cyp - uh - ug * 0.5f + k * (uh + ug);
@@ -314,10 +360,8 @@ static bool ServerTile(const Launcher::ServerShortcut& sv, float tile) {
             dl->AddCircleFilled(ImVec2(a.x + 6.f, (a.y + b.y) * 0.5f), 2.2f, kAccent, 10);
         }
     }
-    if (hov) {
-        dl->AddRect(p, pmax, IM_COL32(255, 255, 255, 60), 10.f, 0, 1.5f);
-        ImGui::SetTooltip("%s\n%s:%d", Narrow(sv.name).c_str(), Narrow(sv.address).c_str(), sv.port);
-    }
+    if (hv > 0.01f) dl->AddRect(q, pmax, IM_COL32(255, 255, 255, (int)(90 * hv)), 10.f, 0, 1.5f);
+    if (hov) ImGui::SetTooltip("%s\n%s:%d", Narrow(sv.name).c_str(), Narrow(sv.address).c_str(), sv.port);
     std::string nm = Narrow(sv.name);
     if (nm.size() > 12) nm = nm.substr(0, 11) + "\xE2\x80\xA6";
     const float off = (tile - ImGui::CalcTextSize(nm.c_str()).x) * 0.5f;
@@ -360,7 +404,8 @@ static void DrawUi(App& app) {
     // ===================== Barre laterale =====================
     const float sideW = 224.f;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16, 18));
-    ImGui::BeginChild("##sidebar", ImVec2(sideW, 0), ImGuiChildFlags_Border);
+    ImGui::BeginChild("##sidebar", ImVec2(sideW, 0), ImGuiChildFlags_Border,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         // Logo + nom + version
@@ -451,26 +496,30 @@ static void DrawUi(App& app) {
             ImGui::Dummy(ImVec2(0, 6));
         };
 
+        // Connexions rapides : toujours en haut de la zone principale, quel que soit l'onglet.
+        if (!app.servers.empty()) {
+            SectionLabel("CONNEXIONS RAPIDES");
+            ImGui::Dummy(ImVec2(0, 2));
+            const float tile = 60.f, tileW = 84.f, pad = 8.f;
+            const float avail = ImGui::GetContentRegionAvail().x;
+            float x = 0.f;
+            for (int i = 0; i < (int)app.servers.size(); ++i) {
+                const bool wrap = (x > 0.f && x + tileW > avail);
+                if (i > 0 && !wrap) ImGui::SameLine(0, pad);
+                if (wrap) x = 0.f;
+                ImGui::PushID(i);
+                if (ServerTile(app.servers[i], tile) && !busy && selMc) startLaunch(Launcher::ConnectUri(app.servers[i]));
+                ImGui::PopID();
+                x += tileW + pad;
+            }
+            ImGui::Dummy(ImVec2(0, 6));
+            ImGui::Separator();
+            ImGui::Dummy(ImVec2(0, 8));
+        }
+
         if (app.tab == 0) {
             // -------- Nouveautes --------
             title("Nouveautés");
-            if (!app.servers.empty()) {
-                SectionLabel("CONNEXIONS RAPIDES");
-                ImGui::Dummy(ImVec2(0, 2));
-                const float tile = 60.f, tileW = 84.f, pad = 8.f;
-                const float avail = ImGui::GetContentRegionAvail().x;
-                float x = 0.f;
-                for (int i = 0; i < (int)app.servers.size(); ++i) {
-                    const bool wrap = (x > 0.f && x + tileW > avail);
-                    if (i > 0 && !wrap) ImGui::SameLine(0, pad);
-                    if (wrap) x = 0.f;
-                    ImGui::PushID(i);
-                    if (ServerTile(app.servers[i], tile) && !busy && selMc) startLaunch(Launcher::ConnectUri(app.servers[i]));
-                    ImGui::PopID();
-                    x += tileW + pad;
-                }
-                ImGui::Dummy(ImVec2(0, 10));
-            }
             if (app.changelog.empty())
                 ImGui::TextDisabled("Aucune note de version (CHANGELOG.md introuvable).");
             for (size_t i = 0; i < app.changelog.size(); ++i) {
