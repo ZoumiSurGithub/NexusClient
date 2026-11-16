@@ -4,8 +4,14 @@ Chaque version publiée doit avoir sa section ici **avant** de pousser le tag : 
 
 ## [0.0.1] - 2026-11-16
 
-- Première version de Nexus, client Minecraft Bedrock (Windows)
-- Nouveau launcher graphique : nouveautés, sélection de version Minecraft et du client, lancement avec ou sans injection
+Première version publique de Nexus, client Minecraft Bedrock (Windows).
+
+- Launcher graphique moderne : barre latérale avec onglets Nouveautés, Paramètres et Journal, animations fluides (survol, clic, transitions)
+- Choix de la version de Minecraft depuis le launcher, avec installation automatique au besoin
+- Versions récupérées directement et à jour (via OnixClient) : téléchargement indépendant, installation uwp et msixvc, dépendances gérées
+- Connexions rapides : serveurs mis en avant par l'équipe Nexus, un clic lance Minecraft et rejoint le serveur directement
+- Le client ne s'injecte que sur les versions de Minecraft qu'il prend en charge
+- Message d'accueil en jeu rappelant comment ouvrir le menu, à l'arrivée sur un monde ou un serveur
 - HUD armure : durabilité des pièces et de l'objet en main, position et taille réglables
 - Compteur FPS configurable (position, taille, couleurs)
 - Compteur CPS, combos et reach (portée donnée et reçue)
@@ -15,14 +21,9 @@ Chaque version publiée doit avoir sa section ici **avant** de pousser le tag : 
 - Auto-sprint
 - Chat : commandes rapides et pré-commandes affichées à côté du chat du jeu
 - Rich Presence Discord (serveur, joueurs connectés, ping)
-- HUD : système de position unifié (ancrage, marges, taille, opacité), compensation de résolution
-- Menu en jeu avec onglet Journal, saisie clavier fiabilisée
-- Mises à jour automatiques via le launcher
-- Versions Minecraft à jour via OnixClient : téléchargement indépendant, installation uwp et msixvc, dépendances gérées
-- Détection de compatibilité : le client ne s'injecte que sur les versions qu'il prend en charge (fichier Nexus.mc)
-- Apparence Rainbow : accent arc-en-ciel animé, appliqué au menu comme aux HUD
-- Repères jaunes « recommandé petit PC » sur les réglages gourmands (barres de vie, FPS)
-- Accents et caractères spéciaux affichés correctement dans le launcher et le client
-- Logo Nexus et crédits sur le launcher ; journal du launcher dépliable, état du téléchargement sur le bouton
-- Xbox Game Bar neutralisée pendant l'installation
-- Optimisations de rendu (couleur d'accent calculée une fois par image)
+- HUD : système de position unifié (ancrage, marges, taille, opacité), compensation selon la résolution
+- Apparence Rainbow : accent arc-en-ciel animé, appliqué au menu comme au HUD
+- Repères jaunes « recommandé petit PC » sur les réglages les plus gourmands
+- Menu en jeu et launcher entièrement en français, accents et caractères spéciaux affichés correctement
+- Xbox Game Bar neutralisée pendant l'installation d'une version
+- Mises à jour automatiques du launcher

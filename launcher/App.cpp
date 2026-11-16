@@ -355,7 +355,14 @@ static bool ServerTile(const Launcher::ServerShortcut& sv, float tile) {
         dl->AddRectFilled(ImVec2(q.x - 2, q.y + 2), ImVec2(pmax.x + 2, pmax.y + 3), IM_COL32(143, 99, 235, (int)(45 * hv)), r + 2);
     dl->AddRectFilled(q, pmax, LerpCol(IM_COL32(40, 35, 66, 255), IM_COL32(64, 55, 100, 255), hv), r);
     if (logo.srv) {
-        dl->AddImageRounded((ImTextureID)logo.srv, q, pmax, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, r);
+        // "Cover" : remplit la pastille carree sans deformer le logo (recadrage centre).
+        ImVec2 uv0(0, 0), uv1(1, 1);
+        if (logo.w > 0 && logo.h > 0 && logo.w != logo.h) {
+            const float ar = (float)logo.w / (float)logo.h;
+            if (ar > 1.f) { const float crop = (1.f - 1.f / ar) * 0.5f; uv0.x = crop; uv1.x = 1.f - crop; }
+            else          { const float crop = (1.f - ar)       * 0.5f; uv0.y = crop; uv1.y = 1.f - crop; }
+        }
+        dl->AddImageRounded((ImTextureID)logo.srv, q, pmax, uv0, uv1, IM_COL32_WHITE, r);
     } else {
         dl->AddRect(q, pmax, kAccent, r, 0, 1.4f);
         const float cxp = (q.x + pmax.x) * 0.5f, cyp = (q.y + pmax.y) * 0.5f;
