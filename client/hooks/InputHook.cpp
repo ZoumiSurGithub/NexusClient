@@ -5,6 +5,7 @@
 #include "core/Config.h"
 #include "modules/ChatOverlay.h"
 #include "modules/ChatSender.h"
+#include "hooks/FocusGrab.h"
 #include <imgui.h>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
@@ -57,6 +58,14 @@ namespace {
             return DefWindowProcW(hwnd, msg, wp, lp);
         }
 
+        // Menu ouvert : un clic sur la zone du jeu ne doit PAS reactiver sa fenetre
+        // (sinon GameInput redemarre et la camera/les clics repassent au jeu).
+        if (Ui::IsMenuOpen() && Config::GetSettings().menuBlockMode != 2) {
+            if (msg == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+            if (msg == WM_ACTIVATE && LOWORD(wp) != WA_INACTIVE) { FocusGrab::OnMenuToggled(true); return 0; }
+            if (msg == WM_SETFOCUS) { FocusGrab::OnMenuToggled(true); return 0; }
+        }
+
         // (Les frappes du joueur pendant une saisie Nexus sont ecartees par le hook clavier
         //  bas niveau de ChatSender : ici, impossible de distinguer les caracteres simules,
         //  car WM_CHAR ne garde pas la marque des touches injectees.)
@@ -80,13 +89,15 @@ namespace {
 
         const bool firstPress = msg == WM_KEYDOWN && !(lp & (1 << 30));
 
-        if (firstPress && wp == VK_INSERT) { Ui::ToggleMenu(); return 0; }
-        if (firstPress && wp == VK_END)    { Client::RequestUnload(); return 0; }
+        // INSER / FIN sont detectes dans la boucle de rendu (independant du focus), voir Ui::Render.
         if (firstPress && wp == VK_ESCAPE && Ui::IsMenuOpen()) { Ui::ToggleMenu(); return 0; }
 
         if (Ui::IsMenuOpen() && ImGui::GetCurrentContext()) {
+            // Le clavier arrive par le hook bas-niveau de FocusGrab (Bedrock = Raw Input
+            // NOLEGACY : aucune fenetre ne recoit WM_KEYDOWN/WM_CHAR). Ici on ne relaie
+            // que la souris et on empeche le jeu de recevoir quoi que ce soit.
             QueueForImGui(hwnd, msg, wp, lp);
-            if (IsInputMessage(msg)) return 0; // le jeu ne recoit rien tant que le menu est ouvert
+            if (IsInputMessage(msg)) return 0;
         }
         return CallWindowProcW(g_original, hwnd, msg, wp, lp);
     }
@@ -100,6 +111,8 @@ void InputHook::Init(HWND hwnd) {
 }
 
 HWND InputHook::Window() { return g_hwnd; }
+
+void InputHook::QueueMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) { QueueForImGui(hwnd, msg, wp, lp); }
 
 void InputHook::FlushToImGui() {
     std::vector<QueuedMsg> pending;

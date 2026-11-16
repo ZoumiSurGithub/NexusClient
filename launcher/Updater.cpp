@@ -158,7 +158,7 @@ namespace {
     }
 
     void ShowManualHelp() {
-        wprintf(L"\n    Telecharge la derniere version a la main :\n    https://github.com/%s/releases/latest\n\n",
+        wprintf(L"\n    Télécharge la dernière version à la main :\n    https://github.com/%s/releases/latest\n\n",
                 NEXUS_UPDATE_REPO);
     }
 
@@ -192,7 +192,7 @@ void Updater::CleanupOldFiles(const fs::path& dir) {
 Updater::Result Updater::Run(const fs::path& dir, const fs::path& selfExe) {
     const std::string local = NEXUS_VERSION;
     if (local.find("-dev") != std::string::npos) {
-        Say(L"Version de developpement (%s) : pas de verification des mises a jour.", NEXUS_VERSION_W);
+        Say(L"Version de développement (%s) : pas de vérification des mises à jour.", NEXUS_VERSION_W);
         return Result::DevBuild;
     }
 
@@ -201,13 +201,13 @@ Updater::Result Updater::Run(const fs::path& dir, const fs::path& selfExe) {
     std::string text;
     DWORD status = 0;
     if (!HttpGet(base + L"/releases/latest/download/nexus-update.txt", text, status) || status != 200) {
-        Say(L"Impossible de verifier les mises a jour (connexion ou GitHub indisponible, code %lu).", status);
+        Say(L"Impossible de vérifier les mises à jour (connexion ou GitHub indisponible, code %lu).", status);
         return Result::Offline;
     }
 
     Manifest m;
     if (!ParseManifest(text, m)) {
-        Say(L"Manifeste de mise a jour invalide : verification ignoree.");
+        Say(L"Manifeste de mise à jour invalide : vérification ignorée.");
         return Result::Offline;
     }
     if (!IsNewer(m.version, local)) {
@@ -218,7 +218,7 @@ Updater::Result Updater::Run(const fs::path& dir, const fs::path& selfExe) {
 
     // Deja installee cette session/ce chainage : ne pas reinstaller en boucle
     if (ReadMarker(dir) == m.version) {
-        Say(L"La mise a jour %s a deja ete installee, mais ce launcher se declare encore %s.",
+        Say(L"La mise à jour %s a déjà été installée, mais ce launcher se déclare encore %s.",
             Widen(m.version).c_str(), NEXUS_VERSION_W);
         Say(L"Build incoherent : la release n'a probablement pas ete compilee par GitHub Actions.");
         Say(L"On lance le jeu avec les fichiers installes (pas de nouvelle tentative).");
@@ -227,7 +227,7 @@ Updater::Result Updater::Run(const fs::path& dir, const fs::path& selfExe) {
 
     // ---- Mise a jour obligatoire ----------------------------------------------------
     wprintf(L"\n  ==============================================\n");
-    wprintf(L"   Mise a jour obligatoire : %s  ->  %s\n", NEXUS_VERSION_W, Widen(m.version).c_str());
+    wprintf(L"   Mise à jour obligatoire : %s  →  %s\n", NEXUS_VERSION_W, Widen(m.version).c_str());
     wprintf(L"  ==============================================\n");
     for (const auto& n : m.notes) wprintf(L"   %s\n", Widen(n).c_str());
     wprintf(L"\n");
@@ -239,15 +239,15 @@ Updater::Result Updater::Run(const fs::path& dir, const fs::path& selfExe) {
 
     // 1. Telechargement du zip, verification de son empreinte, puis extraction
     const std::wstring tagBase = base + L"/releases/download/v" + Widen(m.version) + L"/";
-    Say(L"Telechargement de %s...", Widen(m.packageName).c_str());
+    Say(L"Téléchargement de %s…", Widen(m.packageName).c_str());
     std::string data;
     if (!HttpGet(tagBase + Widen(m.packageName), data, status) || status != 200) {
-        Say(L"Echec du telechargement (code %lu).", status);
+        Say(L"Échec du téléchargement (code %lu).", status);
         ShowManualHelp();
         return Result::Failed;
     }
     if (Sha256Hex(data) != m.packageSha) {
-        Say(L"Le fichier telecharge est corrompu (empreinte SHA-256 differente) : mise a jour annulee.");
+        Say(L"Le fichier téléchargé est corrompu (empreinte SHA-256 différente) : mise à jour annulée.");
         ShowManualHelp();
         return Result::Failed;
     }
@@ -259,13 +259,13 @@ Updater::Result Updater::Run(const fs::path& dir, const fs::path& selfExe) {
     }
     Say(L"Extraction...");
     if (!ExtractZip(zipPath, staging)) {
-        Say(L"Extraction impossible du paquet de mise a jour.");
+        Say(L"Extraction impossible du paquet de mise à jour.");
         ShowManualHelp();
         return Result::Failed;
     }
     for (const auto& name : m.apply) {
         if (!fs::exists(staging / Widen(name))) {
-            Say(L"%s manque dans le paquet de mise a jour.", Widen(name).c_str());
+            Say(L"%s manque dans le paquet de mise à jour.", Widen(name).c_str());
             ShowManualHelp();
             return Result::Failed;
         }
@@ -301,7 +301,7 @@ Updater::Result Updater::Run(const fs::path& dir, const fs::path& selfExe) {
 
     // 3. Relance du nouveau launcher
     WriteMarker(dir, m.version);   // anti-boucle : on retient ce qu'on vient d'installer
-    Say(L"Mise a jour %s installee ! Redemarrage du launcher...", Widen(m.version).c_str());
+    Say(L"Mise à jour %s installée ! Redémarrage du launcher…", Widen(m.version).c_str());
     std::wstring cmd = L"\"" + selfExe.wstring() + L"\" --updated";
     STARTUPINFOW si{ sizeof(si) };
     PROCESS_INFORMATION pi{};

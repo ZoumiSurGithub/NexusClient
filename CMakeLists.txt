@@ -72,28 +72,42 @@ add_library(Nexus SHARED
     client/hooks/RenderHook.cpp
     client/hooks/InputHook.cpp
     client/hooks/MouseBlock.cpp
+    client/hooks/FocusGrab.cpp
     client/game/Game.cpp
+    client/game/ItemRender.cpp
+    client/game/ArmorEcs.cpp
+    client/game/IconCache.cpp
+    client/game/StbImage.cpp
     client/modules/AutoSprint.cpp
     client/modules/HealthBars.cpp
+    client/modules/Stats.cpp
     client/modules/Zoom.cpp
     client/modules/OwnNametag.cpp
+    client/modules/ThirdPersonNametag.cpp
     client/modules/ChatSender.cpp
     client/modules/ChatOverlay.cpp
     client/modules/Network.cpp
     client/modules/DiscordRPC.cpp
     client/ui/Hud.cpp
     client/ui/Menu.cpp)
-target_include_directories(Nexus PRIVATE client ${CMAKE_BINARY_DIR}/generated)
-target_link_libraries(Nexus PRIVATE imgui minhook d3d11 d3d12 dxgi ws2_32 shell32)
+target_include_directories(Nexus PRIVATE client third_party ${CMAKE_BINARY_DIR}/generated)
+target_link_libraries(Nexus PRIVATE imgui minhook d3d11 d3d12 dxgi ws2_32 shell32 ole32)
 target_compile_definitions(Nexus PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_compile_options(Nexus PRIVATE /W4 /utf-8 /EHa) # /EHa : __try/__except autour des lectures memoire
 
-# --- Le launcher ----------------------------------------------------------------
-add_executable(NexusLauncher launcher/main.cpp launcher/Updater.cpp launcher/launcher.rc)
-target_include_directories(NexusLauncher PRIVATE ${CMAKE_BINARY_DIR}/generated)
+# --- Le launcher (application graphique ImGui + DirectX 11) ---------------------
+add_executable(NexusLauncher WIN32
+    launcher/App.cpp
+    launcher/Launcher.cpp
+    launcher/Updater.cpp
+    launcher/StbImageLauncher.cpp
+    launcher/launcher.rc)
+target_include_directories(NexusLauncher PRIVATE client third_party ${CMAKE_BINARY_DIR}/generated)
 target_compile_definitions(NexusLauncher PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
-target_compile_options(NexusLauncher PRIVATE /W4 /utf-8 /EHsc)
-target_link_libraries(NexusLauncher PRIVATE advapi32 shell32 winhttp bcrypt)
+target_compile_options(NexusLauncher PRIVATE /utf-8 /EHsc)
+target_link_libraries(NexusLauncher PRIVATE imgui
+    advapi32 shell32 winhttp bcrypt
+    d3d11 dxgi d3dcompiler dwmapi user32 gdi32 imm32)
 
 # En dev : on copie offsets.ini a cote de la DLL s'il existe (edition a chaud, prioritaire sur l'integre).
 # En release (compilation GitHub), offsets.ini vient d'un secret et reste integre dans la DLL, pas copie.
@@ -105,3 +119,9 @@ endif()
 add_custom_command(TARGET NexusLauncher POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${CMAKE_SOURCE_DIR}/assets/NexusTitle.mcpack $<TARGET_FILE_DIR:NexusLauncher>/NexusTitle.mcpack)
+# Notes de version (panneau "Nouveautes" du launcher) + exemple de manifeste clients.
+add_custom_command(TARGET NexusLauncher POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_SOURCE_DIR}/CHANGELOG.md $<TARGET_FILE_DIR:NexusLauncher>/CHANGELOG.md
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_SOURCE_DIR}/launcher/clients.sample.ini $<TARGET_FILE_DIR:NexusLauncher>/clients.sample.ini)

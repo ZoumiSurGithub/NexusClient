@@ -1,0 +1,685 @@
+// Nexus Launcher - application graphique (Win32 + DirectX 11 + Dear ImGui).
+// Fenetre stylisee facon client Nexus : nouveautes, selection de version (client + Minecraft),
+// et lancement (injection si un client existe pour la version, sinon Minecraft seul).
+#include <windows.h>
+#include <d3d11.h>
+#include <dxgi1_3.h>
+#include <dwmapi.h>
+#include <thread>
+#include <atomic>
+#include <cmath>
+
+#include "imgui.h"
+#include "backends/imgui_impl_win32.h"
+#include "backends/imgui_impl_dx11.h"
+
+#include "Launcher.h"
+#include "Credits.h"   // credits partages avec le client
+#include "Updater.h"
+#include "version.h"
+#include "stb_image.h" // decodage des logos serveurs (implementation dans StbImageLauncher.cpp)
+
+#include <map>
+#include <string>
+
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "dwmapi.lib")
+
+// --- DirectX 11 (global, comme l'exemple officiel ImGui) ------------------------
+static ID3D11Device*            g_device = nullptr;
+static ID3D11DeviceContext*     g_context = nullptr;
+static IDXGISwapChain*          g_swap = nullptr;
+static ID3D11RenderTargetView*  g_rtv = nullptr;
+
+// --- Logos serveurs : cache de textures D3D11 chargees depuis des fichiers image ----
+struct LogoTex { ID3D11ShaderResourceView* srv = nullptr; int w = 0, h = 0; bool tried = false; };
+static std::map<std::wstring, LogoTex> g_logos;
+
+static const LogoTex& GetLogo(const std::wstring& path) {
+    LogoTex& t = g_logos[path];
+    if (t.tried) return t;                 // charge une seule fois (l'UI tourne a chaque frame)
+    t.tried = true;
+    if (path.empty() || !g_device) return t;
+    const int n = WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    std::string p(n > 0 ? n - 1 : 0, '\0');
+    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, &p[0], n, nullptr, nullptr);
+    int w = 0, h = 0, ch = 0;
+    unsigned char* data = stbi_load(p.c_str(), &w, &h, &ch, 4);
+    if (!data) return t;
+    D3D11_TEXTURE2D_DESC d{}; d.Width = w; d.Height = h; d.MipLevels = 1; d.ArraySize = 1;
+    d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1;
+    d.Usage = D3D11_USAGE_DEFAULT; d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA sr{}; sr.pSysMem = data; sr.SysMemPitch = w * 4;
+    ID3D11Texture2D* tex = nullptr;
+    if (SUCCEEDED(g_device->CreateTexture2D(&d, &sr, &tex)) && tex) {
+        g_device->CreateShaderResourceView(tex, nullptr, &t.srv);
+        tex->Release();
+        t.w = w; t.h = h;
+    }
+    stbi_image_free(data);
+    return t;
+}
+
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
+
+static void CreateRenderTarget() {
+    ID3D11Texture2D* back = nullptr;
+    g_swap->GetBuffer(0, IID_PPV_ARGS(&back));
+    if (back) { g_device->CreateRenderTargetView(back, nullptr, &g_rtv); back->Release(); }
+}
+static void CleanupRenderTarget() { if (g_rtv) { g_rtv->Release(); g_rtv = nullptr; } }
+
+static bool CreateDevice(HWND hwnd) {
+    DXGI_SWAP_CHAIN_DESC sd{};
+    sd.BufferCount = 2;
+    sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    sd.OutputWindow = hwnd;
+    sd.SampleDesc.Count = 1;
+    sd.Windowed = TRUE;
+    sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    UINT flags = 0;
+    D3D_FEATURE_LEVEL fl;
+    const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0 };
+    HRESULT hr = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
+        levels, 2, D3D11_SDK_VERSION, &sd, &g_swap, &g_device, &fl, &g_context);
+    if (hr == DXGI_ERROR_UNSUPPORTED)
+        hr = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, flags,
+            levels, 2, D3D11_SDK_VERSION, &sd, &g_swap, &g_device, &fl, &g_context);
+    if (FAILED(hr)) return false;
+    CreateRenderTarget();
+    return true;
+}
+static void CleanupDevice() {
+    CleanupRenderTarget();
+    if (g_swap) { g_swap->Release(); g_swap = nullptr; }
+    if (g_context) { g_context->Release(); g_context = nullptr; }
+    if (g_device) { g_device->Release(); g_device = nullptr; }
+}
+
+static LRESULT WINAPI WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp)) return true;
+    switch (msg) {
+        case WM_SIZE:
+            if (g_device && wp != SIZE_MINIMIZED) {
+                CleanupRenderTarget();
+                g_swap->ResizeBuffers(0, LOWORD(lp), HIWORD(lp), DXGI_FORMAT_UNKNOWN, 0);
+                CreateRenderTarget();
+            }
+            return 0;
+        case WM_DESTROY: PostQuitMessage(0); return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// --- Palette Nexus --------------------------------------------------------------
+static const ImU32 kAccent   = IM_COL32(143,  99, 235, 255);  // violet Nexus
+static const ImU32 kAccentHi = IM_COL32(168, 128, 248, 255);
+static const ImU32 kBgTop    = IM_COL32( 18,  17,  26, 255);
+static const ImU32 kBgBot    = IM_COL32( 11,  10,  16, 255);
+static const ImU32 kCard     = IM_COL32( 23,  22,  32, 255);
+static const ImU32 kCardBord = IM_COL32(255, 255, 255,  14);
+
+// --- Style de base (couleurs douces, coins arrondis) ----------------------------
+static void ApplyNexusStyle() {
+    ImGuiStyle& s = ImGui::GetStyle();
+    s.WindowRounding = 0.f; s.FrameRounding = 8.f; s.GrabRounding = 8.f;
+    s.ChildRounding = 14.f; s.PopupRounding = 8.f;
+    s.WindowPadding = ImVec2(26, 22); s.FramePadding = ImVec2(12, 9); s.ItemSpacing = ImVec2(12, 10);
+    s.ScrollbarRounding = 8.f; s.ScrollbarSize = 11.f; s.WindowBorderSize = 0.f; s.ChildBorderSize = 1.f;
+    s.PopupBorderSize = 0.f;
+    ImVec4* c = s.Colors;
+    const ImVec4 accent  = ImGui::ColorConvertU32ToFloat4(kAccent);
+    const ImVec4 accentH = ImGui::ColorConvertU32ToFloat4(kAccentHi);
+    c[ImGuiCol_WindowBg]      = ImVec4(0.055f,0.050f,0.080f,1.00f);
+    c[ImGuiCol_ChildBg]       = ImGui::ColorConvertU32ToFloat4(kCard);
+    c[ImGuiCol_PopupBg]       = ImVec4(0.10f, 0.095f,0.14f, 0.98f);
+    c[ImGuiCol_Border]        = ImGui::ColorConvertU32ToFloat4(kCardBord);
+    c[ImGuiCol_FrameBg]       = ImVec4(0.12f, 0.12f, 0.17f, 1.00f);
+    c[ImGuiCol_FrameBgHovered]= ImVec4(0.17f, 0.16f, 0.24f, 1.00f);
+    c[ImGuiCol_FrameBgActive] = ImVec4(0.20f, 0.18f, 0.30f, 1.00f);
+    c[ImGuiCol_Button]        = ImVec4(0.18f, 0.17f, 0.26f, 1.00f);
+    c[ImGuiCol_ButtonHovered] = ImVec4(0.24f, 0.22f, 0.34f, 1.00f);
+    c[ImGuiCol_ButtonActive]  = ImVec4(0.28f, 0.24f, 0.40f, 1.00f);
+    c[ImGuiCol_Header]        = ImVec4(0.20f, 0.18f, 0.30f, 1.00f);
+    c[ImGuiCol_HeaderHovered] = accentH;
+    c[ImGuiCol_HeaderActive]  = accent;
+    c[ImGuiCol_CheckMark]     = accent;
+    c[ImGuiCol_SliderGrab]    = accent;
+    c[ImGuiCol_Separator]     = ImGui::ColorConvertU32ToFloat4(kCardBord);
+    c[ImGuiCol_ScrollbarBg]   = ImVec4(0,0,0,0);
+    c[ImGuiCol_ScrollbarGrab] = ImVec4(1,1,1,0.10f);
+    c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(1,1,1,0.18f);
+    c[ImGuiCol_Text]          = ImVec4(0.93f, 0.93f, 0.96f, 1.00f);
+    c[ImGuiCol_TextDisabled]  = ImVec4(0.52f, 0.52f, 0.62f, 1.00f);
+}
+
+// --- Petits composants "modernes" -----------------------------------------------
+// Libelle de section : petites majuscules grisees, avec espacement.
+static void SectionLabel(const char* txt) {
+    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(135,133,158,255));
+    ImGui::SetWindowFontScale(0.82f);
+    ImGui::TextUnformatted(txt);
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopStyleColor();
+    ImGui::Dummy(ImVec2(0, 2));
+}
+
+// Bouton principal arrondi avec surbrillance au survol (dessin personnalise).
+static bool AccentButton(const char* id, const char* label, const ImVec2& size, bool enabled) {
+    ImGui::BeginDisabled(!enabled);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const bool pressed = ImGui::InvisibleButton(id, size);
+    const bool hov = ImGui::IsItemHovered(), act = ImGui::IsItemActive();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 pmax(p.x + size.x, p.y + size.y);
+    const float r = 11.f;
+    if (enabled && hov)   // halo
+        dl->AddRectFilled(ImVec2(p.x - 4, p.y - 4), ImVec2(pmax.x + 4, pmax.y + 4), IM_COL32(143, 99, 235, 55), r + 4);
+    const ImU32 base = !enabled ? IM_COL32(48, 46, 64, 255)
+                       : act    ? IM_COL32(120, 82, 210, 255)
+                       : hov     ? kAccentHi : kAccent;
+    dl->AddRectFilled(p, pmax, base, r);
+    dl->AddRect(p, pmax, IM_COL32(255, 255, 255, 28), r, 0, 1.2f);  // liseret clair
+    const ImVec2 ts = ImGui::CalcTextSize(label);
+    dl->AddText(ImVec2(p.x + (size.x - ts.x) * 0.5f, p.y + (size.y - ts.y) * 0.5f),
+                IM_COL32(255, 255, 255, enabled ? 255 : 140), label);
+    ImGui::EndDisabled();
+    return pressed && enabled;
+}
+
+// Bouton secondaire arrondi (texte).
+static bool GhostButton(const char* label, const ImVec2& size, bool enabled) {
+    ImGui::BeginDisabled(!enabled);
+    const bool pressed = ImGui::Button(label, size);
+    ImGui::EndDisabled();
+    return pressed && enabled;
+}
+
+// --- Etat de l'application -------------------------------------------------------
+struct App {
+    Launcher::Config                  cfg;
+    Launcher::Log                     log;
+    std::vector<Launcher::McVersion>  mcVersions;
+    std::vector<Launcher::ClientBuild> clients;
+    std::vector<Launcher::ChangeEntry> changelog;
+    std::vector<Launcher::ServerShortcut> servers;      // connexions rapides (config distante)
+    std::vector<std::wstring> clientVersions;           // versions supportees par le client (distante)
+    int   mcIndex = 0;
+    HWND  hwnd = nullptr;       // fenetre du launcher (pour la cacher/restaurer pendant le jeu)
+    std::atomic<bool> busy{ false };
+    std::thread worker;        // thread du lancement en cours (injection)
+    bool  wantRefresh = false; // demande de rechargement (traitee apres le rendu)
+    int   tab = 0;             // onglet actif : 0 = Nouveautes, 1 = Parametres, 2 = Journal
+    bool  autoScroll = true;   // journal : defilement automatique vers le bas
+
+    std::thread fetchThread;                     // recuperation des versions en ligne (tache de fond)
+    std::atomic<bool> onlineReady{ false };
+    std::atomic<bool> fetching{ false };
+    std::atomic<bool> dlOk{ false };             // installation terminee avec succes
+    std::vector<Launcher::McVersion> onlinePending;
+    std::wstring installedVer;                    // version Minecraft actuellement installee
+    Launcher::Featured featuredPending;           // contenu distant en attente de fusion (fetch thread)
+
+    void Refresh() {
+        mcVersions = Launcher::EnumerateMcVersions(cfg);   // "Version active"
+        clients    = Launcher::LoadClients(cfg, log);
+        changelog  = Launcher::LoadChangelog(cfg);
+        if (mcIndex >= (int)mcVersions.size()) mcIndex = 0;
+        // En tache de fond (ne bloque pas l'UI) : version installee, versions en ligne, config distante.
+        if (fetchThread.joinable()) fetchThread.join();
+        onlineReady = false; fetching = true;
+        fetchThread = std::thread([this] {
+            std::wstring iv = Launcher::GetInstalledMcVersion();
+            auto v = Launcher::FetchOnlineReleases(cfg, 0, log);   // 0 = toutes les versions
+            auto feat = Launcher::FetchFeatured(cfg, log);          // serveurs + versions client (dev)
+            installedVer = iv;
+            onlinePending = std::move(v);
+            featuredPending = std::move(feat);
+            fetching = false; onlineReady = true;
+        });
+    }
+
+    // Fusionne les versions en ligne et marque celle qui est actuellement installee.
+    void MergeOnline() {
+        if (!installedVer.empty() && !mcVersions.empty() && mcVersions[0].active) {
+            mcVersions[0].label = L"Version active (" + installedVer + L")";
+            mcVersions[0].version = installedVer;        // pour la detection de compatibilite du client
+            mcVersions[0].packageVersion = installedVer;
+        }
+        for (auto& ov : onlinePending) {
+            // installedVer est la version de paquet (ex. "1.26.6301.0") -> comparer a packageVersion.
+            ov.installed = (!installedVer.empty() && ov.packageVersion == installedVer);
+            ov.label = ov.version + (ov.installed ? L" (installée)" : L" (à télécharger)");
+            mcVersions.push_back(ov);
+        }
+        onlinePending.clear();
+
+        // Contenu mis en avant (decide par le developpeur) : serveurs + versions du client.
+        servers = std::move(featuredPending.servers);
+        if (!featuredPending.clientVersions.empty()) {
+            clientVersions = featuredPending.clientVersions;
+            for (auto& c : clients) c.mcVersions = clientVersions;  // le dev decide, pas le joueur
+        }
+        featuredPending = Launcher::Featured{};
+    }
+};
+
+static std::string Narrow(const std::wstring& w) {
+    if (w.empty()) return {};
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+    std::string s(n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), s.data(), n, nullptr, nullptr);
+    return s;
+}
+
+// Onglet de la barre laterale : bouton pleine largeur, surligne + barre d'accent si actif.
+static bool SidebarTab(const char* label, bool selected) {
+    ImGui::PushStyleColor(ImGuiCol_Button, selected ? ImVec4(0.17f, 0.15f, 0.27f, 1.f) : ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, selected ? ImVec4(0.21f, 0.18f, 0.32f, 1.f) : ImVec4(1, 1, 1, 0.05f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.08f));
+    ImGui::PushStyleColor(ImGuiCol_Text, selected ? ImVec4(0.96f, 0.95f, 1.f, 1.f) : ImVec4(0.72f, 0.72f, 0.80f, 1.f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ButtonTextAlign, ImVec2(0.f, 0.5f));
+    const bool r = ImGui::Button(label, ImVec2(-FLT_MIN, 38.f));
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(4);
+    if (selected) {
+        const ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
+        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(mn.x, mn.y + 8.f), ImVec2(mn.x + 3.f, mx.y - 8.f), kAccent, 2.f);
+    }
+    return r;
+}
+
+// Une tuile "connexion rapide" (logo ou icone serveur par defaut). Renvoie true au clic.
+static bool ServerTile(const Launcher::ServerShortcut& sv, float tile) {
+    ImGui::BeginGroup();
+    const LogoTex& logo = GetLogo(sv.logoPath);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const bool clicked = ImGui::InvisibleButton("##logo", ImVec2(tile, tile));
+    const bool hov = ImGui::IsItemHovered();
+    const ImVec2 pmax(p.x + tile, p.y + tile);
+    dl->AddRectFilled(p, pmax, hov ? IM_COL32(60, 52, 96, 255) : IM_COL32(40, 35, 66, 255), 10.f);
+    if (logo.srv) {
+        dl->AddImageRounded((ImTextureID)logo.srv, p, pmax, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 10.f);
+    } else {
+        dl->AddRect(p, pmax, kAccent, 10.f, 0, 1.5f);
+        const float cxp = p.x + tile * 0.5f, cyp = p.y + tile * 0.5f;
+        const float uw = 34.f, uh = 11.f, ug = 5.f;
+        for (int k = 0; k < 2; ++k) {
+            const float y0 = cyp - uh - ug * 0.5f + k * (uh + ug);
+            const ImVec2 a(cxp - uw * 0.5f, y0), b(cxp + uw * 0.5f, y0 + uh);
+            dl->AddRectFilled(a, b, IM_COL32(150, 140, 200, 255), 3.f);
+            dl->AddCircleFilled(ImVec2(a.x + 6.f, (a.y + b.y) * 0.5f), 2.2f, kAccent, 10);
+        }
+    }
+    if (hov) {
+        dl->AddRect(p, pmax, IM_COL32(255, 255, 255, 60), 10.f, 0, 1.5f);
+        ImGui::SetTooltip("%s\n%s:%d", Narrow(sv.name).c_str(), Narrow(sv.address).c_str(), sv.port);
+    }
+    std::string nm = Narrow(sv.name);
+    if (nm.size() > 12) nm = nm.substr(0, 11) + "\xE2\x80\xA6";
+    const float off = (tile - ImGui::CalcTextSize(nm.c_str()).x) * 0.5f;
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (off < 0.f ? 0.f : off));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.90f, 0.90f, 0.96f, 1.f));
+    ImGui::TextUnformatted(nm.c_str());
+    ImGui::PopStyleColor();
+    ImGui::EndGroup();
+    return clicked;
+}
+
+static void DrawUi(App& app) {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::GetBackgroundDrawList()->AddRectFilledMultiColor(
+        vp->Pos, ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y), kBgTop, kBgTop, kBgBot, kBgBot);
+    ImGui::SetNextWindowPos(vp->WorkPos);
+    ImGui::SetNextWindowSize(vp->WorkSize);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
+    ImGui::Begin("##nexus", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                 ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopStyleColor();
+
+    const bool busy = app.busy.load();
+    const Launcher::McVersion* selMc = app.mcVersions.empty() ? nullptr : &app.mcVersions[app.mcIndex];
+    const bool needInstall = selMc && !selMc->active && !selMc->installed;
+    const Launcher::ClientBuild* client = selMc ? Launcher::FindClientForMc(app.clients, *selMc) : nullptr;
+    const bool willInject = client && app.cfg.autoInject;
+
+    auto startLaunch = [&](const std::wstring& serverUri) {
+        if (busy || !selMc) return;
+        Launcher::LaunchRequest req;
+        req.cfg = app.cfg; req.mc = *selMc; req.window = app.hwnd; req.needInstall = needInstall;
+        if (willInject) { req.client = *client; req.hasClient = true; }
+        req.serverUri = serverUri;
+        app.busy = true; app.dlOk = false;
+        if (app.worker.joinable()) app.worker.join();
+        app.worker = std::thread([&app, req] { Launcher::RunFlow(req, app.log, app.busy, app.dlOk); });
+    };
+
+    // ===================== Barre laterale =====================
+    const float sideW = 224.f;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16, 18));
+    ImGui::BeginChild("##sidebar", ImVec2(sideW, 0), ImGuiChildFlags_Border);
+    {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        // Logo + nom + version
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const ImVec2 bc(p.x + 17.f, p.y + 16.f);
+        const float r = 17.f;
+        ImVec2 hex[6];
+        for (int i = 0; i < 6; ++i) { const float a = 3.14159265f / 3.f * i + 3.14159265f / 6.f; hex[i] = { bc.x + std::cos(a) * r, bc.y + std::sin(a) * r }; }
+        dl->AddConvexPolyFilled(hex, 6, kAccent);
+        dl->AddPolyline(hex, 6, IM_COL32(255, 255, 255, 90), ImDrawFlags_Closed, 1.8f);
+        { const ImU32 w = IM_COL32(255, 255, 255, 245); const float nx = 6.f, ny = 7.4f, nw = 2.6f;
+          dl->AddLine({ bc.x - nx, bc.y + ny }, { bc.x - nx, bc.y - ny }, w, nw);
+          dl->AddLine({ bc.x - nx, bc.y - ny }, { bc.x + nx, bc.y + ny }, w, nw);
+          dl->AddLine({ bc.x + nx, bc.y + ny }, { bc.x + nx, bc.y - ny }, w, nw); }
+        ImGui::SetCursorScreenPos(ImVec2(p.x + 42.f, p.y - 2.f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f, 0.95f, 1.f, 1.f));
+        ImGui::SetWindowFontScale(1.35f); ImGui::TextUnformatted("Nexus"); ImGui::SetWindowFontScale(1.f);
+        ImGui::PopStyleColor();
+        ImGui::SetCursorScreenPos(ImVec2(p.x + 43.f, p.y + 19.f));
+        ImGui::TextDisabled("Launcher v%s", Narrow(NEXUS_VERSION_W).c_str());
+        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + 44.f));
+
+        ImGui::Dummy(ImVec2(0, 8));
+        if (SidebarTab("Nouveautés", app.tab == 0)) app.tab = 0;
+        if (SidebarTab("Paramètres", app.tab == 1)) app.tab = 1;
+        if (SidebarTab("Journal",    app.tab == 2)) app.tab = 2;
+
+        // ---- Bas : statut client + version + bouton lancer + fleche version ----
+        const float bottomH = 126.f;
+        if (ImGui::GetWindowHeight() - bottomH > ImGui::GetCursorPosY())
+            ImGui::SetCursorPosY(ImGui::GetWindowHeight() - bottomH);
+
+        {   // statut client
+            const ImU32 dot = needInstall ? IM_COL32(120, 170, 240, 255) : willInject ? IM_COL32(90, 210, 120, 255) : IM_COL32(240, 185, 80, 255);
+            const ImVec4 col = needInstall ? ImVec4(0.55f, 0.72f, 0.96f, 1.f) : willInject ? ImVec4(0.60f, 0.88f, 0.62f, 1.f) : ImVec4(0.96f, 0.76f, 0.36f, 1.f);
+            std::string txt = needInstall ? "Version a installer" : willInject ? (client ? Narrow(client->name) : "Client") : "Minecraft seul";
+            if (txt.size() > 24) txt = txt.substr(0, 23) + "\xE2\x80\xA6";
+            const ImVec2 cp = ImGui::GetCursorScreenPos();
+            dl->AddCircleFilled(ImVec2(cp.x + 5.f, cp.y + ImGui::GetTextLineHeight() * 0.5f), 5.f, dot, 16);
+            ImGui::SetCursorScreenPos(ImVec2(cp.x + 16.f, cp.y));
+            ImGui::PushStyleColor(ImGuiCol_Text, col); ImGui::TextUnformatted(txt.c_str()); ImGui::PopStyleColor();
+        }
+        {   // version courante
+            std::string vlabel = selMc ? Narrow(selMc->label) : "(aucune version)";
+            if (vlabel.size() > 28) vlabel = vlabel.substr(0, 27) + "\xE2\x80\xA6";
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.60f, 0.60f, 0.70f, 1.f));
+            ImGui::TextUnformatted(vlabel.c_str());
+            ImGui::PopStyleColor();
+        }
+        ImGui::Dummy(ImVec2(0, 4));
+
+        std::string busyLabel;
+        if (busy) { busyLabel = Narrow(app.log.Status()); if (busyLabel.empty()) busyLabel = "Opération\xE2\x80\xA6"; if (busyLabel.size() > 22) busyLabel = busyLabel.substr(0, 21) + "\xE2\x80\xA6"; }
+        const char* btn = busy ? busyLabel.c_str() : needInstall ? "Installer et jouer" : willInject ? "Lancer avec Nexus" : "Lancer Minecraft seul";
+        const float arrowW = 34.f, lgap = 6.f;
+        const float lbw = ImGui::GetContentRegionAvail().x - arrowW - lgap;
+        if (AccentButton("##launch", btn, ImVec2(lbw, 44), !busy && selMc)) startLaunch(L"");
+        ImGui::SameLine(0, lgap);
+        if (GhostButton("\xE2\x96\xBC", ImVec2(arrowW, 44), !busy)) ImGui::OpenPopup("##verspick");
+        if (ImGui::BeginPopup("##verspick")) {
+            ImGui::TextDisabled("Version de Minecraft%s", app.fetching ? "  (chargement\xE2\x80\xA6)" : "");
+            ImGui::Separator();
+            ImGui::BeginChild("##verslist", ImVec2(320, 340), false);
+            for (int i = 0; i < (int)app.mcVersions.size(); ++i) {
+                const bool sel = (i == app.mcIndex);
+                if (ImGui::Selectable(Narrow(app.mcVersions[i].label).c_str(), sel)) { app.mcIndex = i; ImGui::CloseCurrentPopup(); }
+                if (sel) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndChild();
+            ImGui::Separator();
+            if (ImGui::SmallButton("Actualiser la liste")) { app.wantRefresh = true; ImGui::CloseCurrentPopup(); }
+            ImGui::EndPopup();
+        }
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+
+    // ===================== Zone principale =====================
+    ImGui::SameLine(0, 14);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(22, 20));
+    ImGui::BeginChild("##main", ImVec2(0, 0), ImGuiChildFlags_Border);
+    {
+        ImDrawList* d2 = ImGui::GetWindowDrawList();
+        auto title = [&](const char* t) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f, 0.95f, 1.f, 1.f));
+            ImGui::SetWindowFontScale(1.2f); ImGui::TextUnformatted(t); ImGui::SetWindowFontScale(1.f);
+            ImGui::PopStyleColor();
+            ImGui::Dummy(ImVec2(0, 6));
+        };
+
+        if (app.tab == 0) {
+            // -------- Nouveautes --------
+            title("Nouveautés");
+            if (!app.servers.empty()) {
+                SectionLabel("CONNEXIONS RAPIDES");
+                ImGui::Dummy(ImVec2(0, 2));
+                const float tile = 60.f, tileW = 84.f, pad = 8.f;
+                const float avail = ImGui::GetContentRegionAvail().x;
+                float x = 0.f;
+                for (int i = 0; i < (int)app.servers.size(); ++i) {
+                    const bool wrap = (x > 0.f && x + tileW > avail);
+                    if (i > 0 && !wrap) ImGui::SameLine(0, pad);
+                    if (wrap) x = 0.f;
+                    ImGui::PushID(i);
+                    if (ServerTile(app.servers[i], tile) && !busy && selMc) startLaunch(Launcher::ConnectUri(app.servers[i]));
+                    ImGui::PopID();
+                    x += tileW + pad;
+                }
+                ImGui::Dummy(ImVec2(0, 10));
+            }
+            if (app.changelog.empty())
+                ImGui::TextDisabled("Aucune note de version (CHANGELOG.md introuvable).");
+            for (size_t i = 0; i < app.changelog.size(); ++i) {
+                const auto& e = app.changelog[i];
+                if (i) ImGui::Dummy(ImVec2(0, 10));
+                const std::string ver = Narrow(e.version);
+                const ImVec2 tp = ImGui::GetCursorScreenPos();
+                const ImVec2 ts = ImGui::CalcTextSize(ver.c_str());
+                const ImVec2 pad(10, 4);
+                d2->AddRectFilled(tp, ImVec2(tp.x + ts.x + pad.x * 2, tp.y + ts.y + pad.y * 2), IM_COL32(143, 99, 235, 45), 6.f);
+                d2->AddText(ImVec2(tp.x + pad.x, tp.y + pad.y), IM_COL32(200, 180, 255, 255), ver.c_str());
+                ImGui::Dummy(ImVec2(ts.x + pad.x * 2, ts.y + pad.y * 2));
+                if (!e.date.empty()) { ImGui::SameLine(0, 10); ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("%s", Narrow(e.date).c_str()); }
+                ImGui::Dummy(ImVec2(0, 4));
+                for (const auto& n : e.notes) {
+                    const ImVec2 bp = ImGui::GetCursorScreenPos();
+                    d2->AddCircleFilled(ImVec2(bp.x + 4, bp.y + ImGui::GetTextLineHeight() * 0.5f), 2.5f, kAccent, 12);
+                    ImGui::Indent(14.f); ImGui::TextWrapped("%s", Narrow(n).c_str()); ImGui::Unindent(14.f);
+                }
+            }
+        }
+        else if (app.tab == 1) {
+            // -------- Parametres du launcher --------
+            title("Paramètres du launcher");
+            bool ch = false;
+            ch |= ImGui::Checkbox("Cacher le launcher pendant le jeu", &app.cfg.hideWhilePlaying);
+            ch |= ImGui::Checkbox("Injecter le client Nexus quand il est compatible", &app.cfg.autoInject);
+            ch |= ImGui::Checkbox("Centrer la fenêtre au démarrage", &app.cfg.centerOnStart);
+            if (ch) Launcher::SaveLauncherSettings(app.cfg);
+            ImGui::Dummy(ImVec2(0, 10));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.60f, 0.60f, 0.70f, 1.f));
+            ImGui::TextWrapped("Les serveurs mis en avant et les versions de Minecraft prises en charge par le client sont definis par le developpeur et recuperes automatiquement au lancement.");
+            ImGui::PopStyleColor();
+
+            // Credits en bas
+            const float footerH = 94.f;
+            if (ImGui::GetCursorPosY() < ImGui::GetWindowHeight() - footerH) ImGui::SetCursorPosY(ImGui::GetWindowHeight() - footerH);
+            ImGui::Separator(); ImGui::Dummy(ImVec2(0, 4));
+            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(135, 133, 158, 255));
+            ImGui::SetWindowFontScale(0.82f); ImGui::TextUnformatted("CREDITS"); ImGui::SetWindowFontScale(1.f);
+            ImGui::PopStyleColor();
+            ImGui::Dummy(ImVec2(0, 2));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.72f, 0.72f, 0.80f, 1.f));
+            ImGui::Text("Créé par  %s", Credits::kCreatedBy);
+            ImGui::Text("Signatures  %s", Credits::kSignaturesBy);
+            ImGui::Text("Versions  %s", Credits::kVersionsBy);
+            ImGui::PopStyleColor();
+        }
+        else {
+            // -------- Journal --------
+            title("Journal");
+            const auto logLines = app.log.Snapshot();
+            ImGui::Checkbox("Défilement automatique", &app.autoScroll);
+            ImGui::SameLine();
+            ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - 150.f);
+            if (ImGui::SmallButton("Copier")) {
+                std::string all; for (const auto& ln : logLines) { all += Narrow(ln.text); all += "\n"; }
+                ImGui::SetClipboardText(all.c_str());
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Effacer")) app.log.Clear();
+            ImGui::Dummy(ImVec2(0, 4));
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0.25f));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12, 10));
+            ImGui::BeginChild("##log", ImVec2(0, 0), ImGuiChildFlags_Border, ImGuiWindowFlags_HorizontalScrollbar);
+            for (const auto& ln : logLines) {
+                ImVec4 col(0.80f, 0.80f, 0.88f, 1.f);
+                switch (ln.level) {
+                    case Launcher::Log::Level::Good:  col = ImVec4(0.60f, 0.88f, 0.62f, 1.f); break;
+                    case Launcher::Log::Level::Warn:  col = ImVec4(0.96f, 0.76f, 0.36f, 1.f); break;
+                    case Launcher::Log::Level::Error: col = ImVec4(0.96f, 0.48f, 0.48f, 1.f); break;
+                    default: break;
+                }
+                ImGui::PushStyleColor(ImGuiCol_Text, col);
+                ImGui::TextWrapped("%s", Narrow(ln.text).c_str());
+                ImGui::PopStyleColor();
+            }
+            if (app.autoScroll && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 2.f) ImGui::SetScrollHereY(1.f);
+            ImGui::EndChild();
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor();
+        }
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+    ImGui::End();
+}
+
+// --- Mises a jour obligatoires au demarrage (silencieux : pas de console) --------
+static bool RunUpdater(const fs::path& exeDir, const wchar_t* selfExe) {
+    Updater::CleanupOldFiles(exeDir);
+    switch (Updater::Run(exeDir, selfExe)) {
+        case Updater::Result::Updated: return false;  // le nouveau launcher a pris le relais : quitter
+        case Updater::Result::Failed:
+            MessageBoxW(nullptr, L"Nexus ne peut pas démarrer sans la dernière mise à jour.",
+                        L"Nexus Launcher", MB_ICONERROR | MB_OK);
+            return false;
+        default: return true;  // a jour / hors ligne / version de dev : on continue
+    }
+}
+
+int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    const fs::path exeDir = fs::path(exePath).parent_path();
+
+    if (!RunUpdater(exeDir, exePath)) return 0;
+
+    // Fenetre
+    WNDCLASSEXW wc{ sizeof(wc) };
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hInst;
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hIcon = LoadIconW(hInst, MAKEINTRESOURCEW(1));
+    wc.lpszClassName = L"NexusLauncherWnd";
+    RegisterClassExW(&wc);
+    // Fenetre centree sur la zone de travail (sauf si l'option est desactivee dans launcher.ini).
+    const int winW = 980, winH = 700;
+    const fs::path lini = exeDir / L"launcher.ini";
+    const bool center = GetPrivateProfileIntW(L"launcher", L"center_on_start", 1, lini.c_str()) != 0;
+    int winX = CW_USEDEFAULT, winY = CW_USEDEFAULT;
+    if (center) {
+        RECT wa{}; SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+        winX = wa.left + ((wa.right - wa.left) - winW) / 2;
+        winY = wa.top  + ((wa.bottom - wa.top) - winH) / 2;
+    }
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"Nexus Launcher",
+        WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, winX, winY, winW, winH,
+        nullptr, nullptr, hInst, nullptr);
+
+    if (!CreateDevice(hwnd)) { CleanupDevice(); DestroyWindow(hwnd); UnregisterClassW(wc.lpszClassName, hInst); return 1; }
+
+    // Barre de titre sombre (Windows 10/11)
+    BOOL dark = TRUE; DwmSetWindowAttribute(hwnd, 20 /*DWMWA_USE_IMMERSIVE_DARK_MODE*/, &dark, sizeof(dark));
+    ShowWindow(hwnd, SW_SHOWDEFAULT);
+    UpdateWindow(hwnd);
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    // Police : Segoe UI si disponible (accents corrects), sinon police par defaut.
+    {
+        static const ImWchar kRanges[] = {
+            0x0020, 0x00FF, // latin + latin-1 (accents francais)
+            0x2010, 0x2027, // tirets, apostrophes/guillemets courbes, puce, points de suspension
+            0x20AC, 0x20AC, // euro
+            0x2190, 0x2193, // fleches
+            0x25A0, 0x25CF, // carres / ronds pleins
+            0,
+        };
+        wchar_t win[MAX_PATH]; GetWindowsDirectoryW(win, MAX_PATH);
+        const std::string seg = Narrow(std::wstring(win) + L"\\Fonts\\segoeui.ttf");
+        if (GetFileAttributesA(seg.c_str()) != INVALID_FILE_ATTRIBUTES)
+            io.Fonts->AddFontFromFileTTF(seg.c_str(), 19.f, nullptr, kRanges);
+    }
+    ApplyNexusStyle();
+    ImGui_ImplWin32_Init(hwnd);
+    ImGui_ImplDX11_Init(g_device, g_context);
+
+    App app;
+    app.hwnd = hwnd;
+    app.cfg = Launcher::LoadConfig(exeDir);
+    app.Refresh();
+    app.log.Info(L"Pret. Choisis une version et clique sur Lancer.");
+
+    bool running = true;
+    while (running) {
+        MSG msg;
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) running = false;
+            TranslateMessage(&msg); DispatchMessageW(&msg);
+        }
+        if (!running) break;
+
+        // Cachee (Minecraft en cours) : on ne rend rien pour economiser les ressources.
+        if (!IsWindowVisible(hwnd)) { Sleep(100); continue; }
+
+        ImGui_ImplDX11_NewFrame();
+        ImGui_ImplWin32_NewFrame();
+        ImGui::NewFrame();
+        DrawUi(app);
+        ImGui::Render();
+
+        if (app.wantRefresh && !app.busy) { app.Refresh(); app.wantRefresh = false; }
+        if (app.onlineReady) {                       // versions en ligne pretes : on les fusionne
+            app.MergeOnline();
+            app.onlineReady = false;
+            if (app.fetchThread.joinable()) app.fetchThread.join();
+        }
+        if (app.dlOk && !app.busy) { app.dlOk = false; app.wantRefresh = true; }  // version installee -> recharger
+
+        const float clear[4] = { 0.05f, 0.05f, 0.07f, 1.0f };
+        g_context->OMSetRenderTargets(1, &g_rtv, nullptr);
+        g_context->ClearRenderTargetView(g_rtv, clear);
+        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        g_swap->Present(1, 0);  // vsync
+    }
+
+    if (app.worker.joinable()) app.worker.join();         // attend la fin d'un lancement en cours
+    if (app.fetchThread.joinable()) app.fetchThread.join();
+
+    ImGui_ImplDX11_Shutdown();
+    ImGui_ImplWin32_Shutdown();
+    ImGui::DestroyContext();
+    CleanupDevice();
+    DestroyWindow(hwnd);
+    UnregisterClassW(wc.lpszClassName, hInst);
+    return 0;
+}

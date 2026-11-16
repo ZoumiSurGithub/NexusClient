@@ -10,9 +10,12 @@
 #include "modules/AutoSprint.h"
 #include "hooks/MouseBlock.h"
 #include "hooks/InputHook.h"
+#include "hooks/FocusGrab.h"
 #include "modules/HealthBars.h"
+#include "modules/Stats.h"
 #include "modules/Zoom.h"
 #include "modules/OwnNametag.h"
+#include "modules/ThirdPersonNametag.h"
 #include "modules/ChatSender.h"
 #include "modules/ChatOverlay.h"
 #include "modules/DiscordRPC.h"
@@ -27,7 +30,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cctype>
+#include <cstring>
 #include <vector>
+#include <unordered_map>
 
 namespace {
     std::atomic<bool> g_menuOpen{ false };
@@ -37,10 +42,8 @@ namespace {
     float g_cardX0 = 0.f, g_cardW = 0.f; // geometrie de la carte en cours (pour aligner les lignes)
 
     // ---- Couleurs ---------------------------------------------------------------
-    ImVec4 Accent(float a = 1.f) {
-        const auto& c = Config::GetSettings().accent;
-        return { c[0], c[1], c[2], a };
-    }
+    // Couleur d'accent : delegue a Ui::AccentColor (partagee avec le HUD, rainbow-aware).
+    ImVec4 Accent(float a = 1.f) { return Ui::AccentColor(a); }
     ImVec4 Mix(const ImVec4& a, const ImVec4& b, float t) {
         return { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, a.w + (b.w - a.w) * t };
     }
@@ -116,24 +119,29 @@ namespace {
     // Selecteur a boutons (remplace les listes deroulantes)
     bool Segmented(const char* id, int* v, const char* const* items, int n) {
         ImGui::PushID(id);
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, { 4.f, 0.f });
-        const float w = (ImGui::GetContentRegionAvail().x - 4.f * (n - 1)) / n;
+        const ImVec2 start = ImGui::GetCursorScreenPos();
+        const float totalW = ImGui::GetContentRegionAvail().x;
+        const float gap = 6.f;
+        const float h = ImGui::GetFrameHeight();
+        const float cellW = (totalW - gap * (n - 1)) / n;   // chaque bouton + un ecart net entre eux
         bool changed = false;
         for (int i = 0; i < n; ++i) {
-            if (i) ImGui::SameLine();
+            ImGui::SetCursorScreenPos({ start.x + i * (cellW + gap), start.y });   // position absolue : pas de chevauchement
             const bool sel = *v == i;
             ImGui::PushStyleColor(ImGuiCol_Button, sel ? Accent(0.85f) : kFrame);
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, sel ? Accent() : kFrameHov);
             ImGui::PushStyleColor(ImGuiCol_Text, sel ? ImVec4(0.05f, 0.05f, 0.06f, 1.f) : kText);
-            if (ImGui::Button(items[i], { w, 0.f })) { *v = i; changed = true; }
+            if (ImGui::Button(items[i], { cellW, h })) { *v = i; changed = true; }
             ImGui::PopStyleColor(3);
         }
-        ImGui::PopStyleVar();
+        // Reserve la hauteur de la rangee pour que la suite se place en dessous.
+        ImGui::SetCursorScreenPos(start);
+        ImGui::Dummy({ totalW, h });
         ImGui::PopID();
         return changed;
     }
 
-    bool SidebarButton(const char* label, bool selected) {
+    bool SidebarButton(const char* label, bool selected, const char* badge = nullptr) {
         const ImVec2 size(ImGui::GetContentRegionAvail().x, 36.f);
         const ImVec2 p = ImGui::GetCursorScreenPos();
         const bool pressed = ImGui::InvisibleButton(label, size);
@@ -144,14 +152,35 @@ namespace {
         else if (hovered) dl->AddRectFilled(p, p + size, IM_COL32(255, 255, 255, 10), 8.f);
         if (selected)     dl->AddRectFilled({ p.x, p.y + 9.f }, { p.x + 3.f, p.y + size.y - 9.f }, U32(Accent()), 2.f);
 
+        // Onglet dev : libelle en italique simule (legere inclinaison impossible ici) -> couleur attenuee + point
+        const ImU32 textCol = badge ? IM_COL32(150, 160, 185, 255)
+                                    : U32(selected ? kText : (hovered ? Mix(kTextDim, kText, 0.5f) : kTextDim));
         const ImVec2 textPos(p.x + 16.f, p.y + (size.y - ImGui::GetTextLineHeight()) * 0.5f);
-        dl->AddText(textPos, U32(selected ? kText : (hovered ? Mix(kTextDim, kText, 0.5f) : kTextDim)), label);
+        dl->AddText(textPos, badge && selected ? U32(kText) : textCol, label);
+
+        // Badge "DEV" a droite
+        if (badge) {
+            const ImVec4 devc(0.55f, 0.75f, 1.0f, 1.f);   // bleu "dev"
+            const float fs = ImGui::GetFontSize() * 0.62f;
+            const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.f, badge);
+            const float px = 5.f, py = 2.f;
+            const ImVec2 bmax(p.x + size.x - 10.f, p.y + (size.y - ts.y) * 0.5f - py + ts.y + py * 2.f);
+            const ImVec2 bmin(bmax.x - ts.x - px * 2.f, p.y + (size.y - ts.y) * 0.5f - py);
+            dl->AddRect(bmin, bmax, U32(ImVec4(devc.x, devc.y, devc.z, 0.55f)), (ts.y + py * 2.f) * 0.5f, 0, 1.f);
+            dl->AddText(ImGui::GetFont(), fs, { bmin.x + px, bmin.y + py }, U32(devc), badge);
+        }
         return pressed;
     }
 
     // Carte de module : titre, description, interrupteur a droite.
     // Renvoie true si le contenu (reglages) doit etre affiche.
-    bool BeginCard(const char* id, const char* title, const char* desc, bool* toggle = nullptr, bool available = true) {
+    std::unordered_map<std::string, bool> g_expanded;   // etat deplie/replie par carte
+
+    // Carte de module : clic sur l'en-tete = deplier/replier les reglages ; l'interrupteur
+    // ne fait qu'activer/desactiver. Les cartes sans interrupteur (reglages generaux) restent
+    // toujours ouvertes.
+    // perfCost : 0 = aucun badge, 1 = impact moyen, 2 = impact lourd (petit PC).
+    bool BeginCard(const char* id, const char* title, const char* desc, bool* toggle = nullptr, bool available = true, bool hasSettings = true, bool collapsibleNoToggle = false, int perfCost = 0) {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 16.f, 14.f });
         ImGui::PushStyleColor(ImGuiCol_ChildBg, kCard);
         ImGui::BeginChild(id, { 0.f, 0.f }, ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
@@ -161,25 +190,72 @@ namespace {
         g_cardX0 = ImGui::GetCursorPosX();
         g_cardW = ImGui::GetContentRegionAvail().x;
 
+        const bool hasSwitch   = (toggle != nullptr);                                         // interrupteur maitre (independant)
+        const bool collapsible = hasSettings && (toggle != nullptr || collapsibleNoToggle);   // fleche + corps dépliable
+        bool& expanded = g_expanded[id];
+
+        const float switchW = hasSwitch ? ImGui::GetFrameHeight() * 0.82f * 1.8f : 0.f;
+        const float chevronW = collapsible ? 20.f : 0.f;
+        const ImVec2 headerPos = ImGui::GetCursorScreenPos();
+
+        // Contenu de l'en-tete (titre + description), dessine comme du texte non cliquable.
         ImGui::BeginGroup();
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + chevronW);
         ImGui::TextUnformatted(title);
+        const ImVec2 titleMin = ImGui::GetItemRectMin(), titleMax = ImGui::GetItemRectMax();
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + chevronW);
         ImGui::PushStyleColor(ImGuiCol_Text, kTextDim);
-        ImGui::PushTextWrapPos(g_cardX0 + g_cardW - (toggle ? 70.f : 0.f));
+        ImGui::PushTextWrapPos(g_cardX0 + g_cardW - switchW - 10.f);
         ImGui::TextUnformatted(desc);
         ImGui::PopTextWrapPos();
         ImGui::PopStyleColor();
         ImGui::EndGroup();
+        const float headerH = ImGui::GetItemRectSize().y;
 
-        if (toggle) {
-            const float groupH = ImGui::GetItemRectSize().y;
-            const float h = ImGui::GetFrameHeight() * 0.82f, w = h * 1.8f;
-            ImGui::SameLine(g_cardX0 + g_cardW - w);
-            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (groupH - h) * 0.5f);
+        // Badge d'avertissement perf, a droite du titre (ne perturbe pas la mise en page).
+        if (perfCost > 0) {
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            const char* txt = perfCost >= 2 ? "LOURD" : "MOYEN";
+            const ImU32 bg  = perfCost >= 2 ? IM_COL32(220, 70, 70, 55)  : IM_COL32(230, 170, 60, 50);
+            const ImU32 fg  = perfCost >= 2 ? IM_COL32(255, 150, 150, 255) : IM_COL32(255, 212, 130, 255);
+            const ImVec2 ts = ImGui::CalcTextSize(txt);
+            const float padx = 5.f;
+            const ImVec2 p0(titleMax.x + 8.f, titleMin.y - 1.f);
+            const ImVec2 p1(p0.x + ts.x + padx * 2.f, titleMax.y + 1.f);
+            dl->AddRectFilled(p0, p1, bg, 4.f);
+            dl->AddText(ImVec2(p0.x + padx, (p0.y + p1.y - ts.y) * 0.5f), fg, txt);
+        }
+
+        // Interrupteur a droite (capture ses clics en premier).
+        if (hasSwitch) {
+            ImGui::SameLine(g_cardX0 + g_cardW - switchW);
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (headerH - ImGui::GetFrameHeight() * 0.82f) * 0.5f);
             ToggleSwitch("##toggle", toggle, available);
         }
 
-        const bool showContent = toggle ? (*toggle && available) : true;
-        if (showContent && toggle) {
+        // Zone cliquable de l'en-tete (titre/description) : deplie / replie.
+        if (collapsible) {
+            ImGui::SetCursorScreenPos(headerPos);
+            if (ImGui::InvisibleButton("##hdr", { g_cardW - switchW - 8.f, headerH })) expanded = !expanded;
+            const bool hov = ImGui::IsItemHovered();
+            if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+
+            // Chevron
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            const ImVec2 c = headerPos + ImVec2(6.f, ImGui::GetTextLineHeight() * 0.5f + 1.f);
+            const ImU32 col = U32(hov ? kText : kTextDim);
+            if (expanded) {   // v
+                dl->AddLine(c + ImVec2(-4, -2), c + ImVec2(0, 2), col, 1.8f);
+                dl->AddLine(c + ImVec2(0, 2), c + ImVec2(4, -2), col, 1.8f);
+            } else {          // >
+                dl->AddLine(c + ImVec2(-2, -4), c + ImVec2(2, 0), col, 1.8f);
+                dl->AddLine(c + ImVec2(2, 0), c + ImVec2(-2, 4), col, 1.8f);
+            }
+        }
+
+        // Dépliable -> suit l'etat ; interrupteur seul -> pas de corps ; carte info -> toujours visible.
+        const bool showContent = collapsible ? expanded : (hasSwitch ? false : true);
+        if (showContent && collapsible) {
             ImGui::Dummy({ 0.f, 2.f });
             ImGui::Separator();
             ImGui::Dummy({ 0.f, 2.f });
@@ -200,6 +276,29 @@ namespace {
         ImGui::SetNextItemWidth(-FLT_MIN);
     }
 
+    // Petit "!" d'aide : affiche une infobulle au survol.
+    void HelpMarker(const char* desc) {
+        const auto& ac = Config::GetSettings().accent;
+        ImGui::TextColored(ImVec4(ac[0], ac[1], ac[2], 1.f), "(!)");
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 20.f);
+            ImGui::TextUnformatted(desc);
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+        }
+    }
+
+    // Comme RowLabel mais avec un "!" d'aide (infobulle) juste apres le libelle.
+    void RowLabelHelp(const char* label, const char* help) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(label);
+        ImGui::SameLine(0.f, 5.f);
+        HelpMarker(help);
+        ImGui::SameLine(g_cardX0 + g_cardW * 0.40f);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+    }
+
     void RowToggle(const char* label, bool* v) {
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(label);
@@ -211,8 +310,40 @@ namespace {
         ImGui::PopID();
     }
 
+    // Repere jaune "recommande petit PC" sur le dernier slider dessine : une marque a la
+    // valeur conseillee + une infobulle jaune nommant cette valeur au survol.
+    void RecoMarker(float reco, float lo, float hi, const char* valueText) {
+        const ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
+        const ImGuiStyle& st = ImGui::GetStyle();
+        const float grab = st.GrabMinSize * 0.5f + st.FramePadding.x;
+        float t = (reco - lo) / (hi - lo); t = t < 0.f ? 0.f : (t > 1.f ? 1.f : t);
+        const float x = mn.x + grab + t * (mx.x - mn.x - 2.f * grab);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImU32 yel = IM_COL32(255, 205, 70, 255);
+        dl->AddLine(ImVec2(x, mn.y + 1.f), ImVec2(x, mx.y - 1.f), IM_COL32(255, 205, 70, 150), 2.f);
+        dl->AddCircleFilled(ImVec2(x, mn.y - 1.f), 3.f, yel, 12);
+        if (ImGui::IsItemHovered()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.80f, 0.27f, 1.f));
+            ImGui::SetTooltip("Recommandé petit PC : %s", valueText);
+            ImGui::PopStyleColor();
+        }
+    }
+    bool RecoSliderInt(const char* id, int* v, int lo, int hi, const char* fmt, int reco, const char* recoText) {
+        const bool r = ImGui::SliderInt(id, v, lo, hi, fmt);
+        RecoMarker((float)reco, (float)lo, (float)hi, recoText);
+        return r;
+    }
+    bool RecoSliderFloat(const char* id, float* v, float lo, float hi, const char* fmt, float reco,
+                         const char* recoText, ImGuiSliderFlags flags = 0) {
+        const bool r = ImGui::SliderFloat(id, v, lo, hi, fmt, flags);
+        RecoMarker(reco, lo, hi, recoText);
+        return r;
+    }
+
     // Mini ecran cliquable : 6 positions predefinies (coins et centres haut/bas)
-    void AnchorPicker(int* anchor) {
+    // withHotbar : ajoute deux points en bas (de part et d'autre du centre) representant
+    // "a gauche / a droite de la hotbar" (ancres 7 et 8).
+    void AnchorPicker(int* anchor, bool withHotbar = false) {
         const float w = 168.f, h = 94.f;
         const ImVec2 p = ImGui::GetCursorScreenPos();
         ImGui::Dummy({ w, h });
@@ -221,19 +352,134 @@ namespace {
         dl->AddRect(p, p + ImVec2(w, h), U32(ImVec4(1, 1, 1, 0.10f)), 8.f, 0, 1.5f);
 
         const float pad = 14.f, r = 8.f;
-        for (int i = 0; i < 6; ++i) {
-            const int col = i % 3, row = i / 3;
-            const ImVec2 c(p.x + pad + (w - 2 * pad) * 0.5f * col, row == 0 ? p.y + pad : p.y + h - pad);
-            ImGui::SetCursorScreenPos(c - ImVec2(r + 4, r + 4));
-            ImGui::PushID(i);
-            if (ImGui::InvisibleButton("##anchor", { 2 * r + 8, 2 * r + 8 })) *anchor = i + 1;
+        const float left = p.x + pad, span = w - 2 * pad;
+        const float botY = p.y + h - pad;
+
+        // Petite "hotbar" dessinee en bas-centre pour reperer les positions 7/8.
+        if (withHotbar) {
+            const float hbw = span * 0.34f, hbh = 7.f;
+            dl->AddRectFilled({ p.x + w * 0.5f - hbw * 0.5f, botY - hbh * 0.5f },
+                              { p.x + w * 0.5f + hbw * 0.5f, botY + hbh * 0.5f }, U32(ImVec4(1, 1, 1, 0.22f)), 2.f);
+        }
+
+        auto point = [&](int id, ImVec2 c, float rad) {
+            ImGui::SetCursorScreenPos(c - ImVec2(rad + 4, rad + 4));
+            ImGui::PushID(id);
+            if (ImGui::InvisibleButton("##a", { 2 * rad + 8, 2 * rad + 8 })) *anchor = id;
             const bool hov = ImGui::IsItemHovered();
             ImGui::PopID();
-            const bool sel = *anchor == i + 1;
-            dl->AddCircleFilled(c, sel ? r : r - 2.f, U32(sel ? Accent() : (hov ? kTextDim : ImVec4(1, 1, 1, 0.18f))));
-            if (sel) dl->AddCircle(c, r + 3.f, U32(Accent(0.5f)), 0, 1.5f);
+            const bool sel = *anchor == id;
+            dl->AddCircleFilled(c, sel ? rad : rad - 2.f, U32(sel ? Accent() : (hov ? kTextDim : ImVec4(1, 1, 1, 0.18f))));
+            if (sel) dl->AddCircle(c, rad + 3.f, U32(Accent(0.5f)), 0, 1.5f);
+        };
+
+        for (int i = 0; i < 6; ++i) {
+            const int col = i % 3, row = i / 3;
+            point(i + 1, ImVec2(left + span * 0.5f * col, row == 0 ? p.y + pad : botY), r);
+        }
+        if (withHotbar) {                                   // 7 = gauche hotbar, 8 = droite hotbar
+            point(7, ImVec2(left + span * 0.30f, botY), r - 1.f);
+            point(8, ImVec2(left + span * 0.70f, botY), r - 1.f);
         }
         ImGui::SetCursorScreenPos({ p.x, p.y + h + ImGui::GetStyle().ItemSpacing.y });
+    }
+
+    // Bloc de controles de position unifie (tous les HUD) : libelle "Position" + rectangle
+    // (picker avec points hotbar) centre a cote, puis position libre, ecart/marge et hauteur.
+    // 'tag' unique par module.
+    // scale (optionnel) : taille du HUD, heritee du systeme de position. minScale depend du
+    // contenu du module (texte seul -> petit mini ; icones -> mini plus grand) pour qu'il reste
+    // toujours lisible. Passer scale=nullptr pour un module sans reglage de taille.
+    void PosControls(const char* tag, int& anchor, float& marginX, float& marginY,
+                     float* scale = nullptr, float minScale = 0.6f, float maxScale = 3.0f,
+                     float* bgAlpha = nullptr) {
+        char id[48];
+        const bool free = (anchor == 0);
+
+        // Libelle a gauche, rectangle centre dans l'espace a droite.
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Position");
+        const float availX0 = g_cardX0 + g_cardW * 0.40f;
+        const float availW  = g_cardW - g_cardW * 0.40f;
+        const float pickerW = 168.f;
+        const float off = (availW - pickerW) * 0.5f;
+        ImGui::SameLine(availX0 + (off > 0.f ? off : 0.f));
+        ImGui::BeginGroup();
+        AnchorPicker(&anchor, true);   // 6 ancres + 2 points hotbar (7/8)
+        snprintf(id, sizeof(id), "Position libre (à faire glisser)##%s", tag);
+        if (ImGui::RadioButton(id, free)) anchor = 0;
+        ImGui::EndGroup();
+
+        // Horizontal : decalage SIGNE centre sur 0 (gauche < 0 < droite). Vertical : marge depuis
+        // le bord. Slider visible + Ctrl+clic pour saisir une valeur exacte au clavier.
+        //
+        // IMPORTANT : la saisie clavier native d'ImGui (Ctrl+clic) repose sur l'etat des
+        // modificateurs, qu'ImGui lit via GetKeyState -- or notre hook clavier bas-niveau BLOQUE
+        // les touches, donc ImGui croit toujours Ctrl relache. On gere donc tout nous-memes :
+        // on lit le Ctrl PHYSIQUE (GetAsyncKeyState) et on bascule le slider en InputFloat.
+        static char g_editId[64] = "";   // id du slider en cours de saisie (vide = aucun)
+        static int  g_editFrames = 0;    // images ecoulees depuis l'ouverture (laisse le focus s'etablir)
+        auto marginSlider = [&](const char* label, const char* sid, float* v, float lo, float hi) {
+            RowLabel(label);
+            snprintf(id, sizeof(id), "%s%s", sid, tag);
+            const bool editing = (strcmp(g_editId, id) == 0);
+            if (editing) {
+                if (g_editFrames == 0) ImGui::SetKeyboardFocusHere();
+                ++g_editFrames;
+                const bool enter = ImGui::InputFloat(id, v, 0.f, 0.f, "%.0f",
+                    ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+                const bool active = ImGui::IsItemActive();
+                // Valide sur Entree, ou quand le champ perd le focus (clic ailleurs). Le delai de
+                // 2 images evite de fermer avant que le focus clavier ne soit reellement pris.
+                if (enter || (g_editFrames > 2 && !active)) {
+                    if (*v < lo) *v = lo; else if (*v > hi) *v = hi;   // borne au min/max
+                    g_editId[0] = '\0'; g_editFrames = 0;
+                }
+            } else {
+                const float before = *v;
+                ImGui::SliderFloat(id, v, lo, hi, "%.0f px",
+                    ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput);
+                if (*v < lo) *v = lo; else if (*v > hi) *v = hi;
+                // Ctrl + clic sur le slider -> bascule en saisie clavier (sans laisser le clic
+                // deplacer la valeur : on restaure la valeur d'avant le clic). On lit le Ctrl via
+                // notre hook clavier (g_kb), car GetAsyncKeyState ne voit pas une touche bloquee.
+                const bool ctrl = FocusGrab::IsCtrlDown();
+                if (ctrl && ImGui::IsItemClicked()) {
+                    *v = before;
+                    strncpy(g_editId, id, sizeof(g_editId) - 1); g_editId[sizeof(g_editId) - 1] = '\0';
+                    g_editFrames = 0;
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Ctrl+clic pour saisir une valeur exacte (bornee au min/max)");
+            }
+        };
+        if (!free) {
+            marginSlider("Décalage horizontal", "##mgx", &marginX, -2000.f, 2000.f);
+            marginSlider("Marge verticale",     "##mgy", &marginY, 0.f, 2000.f);
+        }
+        // Taille du HUD (heritee, comme la position). Le minimum depend du contenu du module :
+        // on borne pour que le HUD ne descende jamais sous une taille lisible.
+        if (scale) {
+            RowLabel("Taille");
+            snprintf(id, sizeof(id), "##size%s", tag);
+            ImGui::SliderFloat(id, scale, minScale, maxScale, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+            if (*scale < minScale) *scale = minScale; else if (*scale > maxScale) *scale = maxScale;
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Taille du HUD (minimum adapte au contenu pour rester lisible)");
+        }
+        // Opacite du fond et de la bordure (heritee, comme la position). Le texte et les icones
+        // restent pleinement opaques. 0 % = fond/bordure invisibles, 100 % = pleinement visibles.
+        if (bgAlpha) {
+            RowLabel("Opacité du fond");
+            snprintf(id, sizeof(id), "##bga%s", tag);
+            float pct = *bgAlpha * 100.f;
+            if (ImGui::SliderFloat(id, &pct, 0.f, 100.f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp))
+                *bgAlpha = std::clamp(pct / 100.f, 0.f, 1.f);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Opacite du fond et de la bordure (le texte reste opaque)");
+        }
+        // Barre de separation entre le bloc Position (herite) et les options propres au module.
+        ImGui::Dummy({ 0.f, 4.f }); ImGui::Separator(); ImGui::Dummy({ 0.f, 4.f });
     }
 
     // ---- Choix d'une touche ------------------------------------------------------------
@@ -324,51 +570,62 @@ namespace {
 
     // ---- Pages ------------------------------------------------------------------
     void PageVisual(Settings& s) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kTextDim);
+        ImGui::TextWrapped("Les badges LOURD / MOYEN signalent les modules les plus gourmands en ressources (à désactiver sur un petit PC).");
+        ImGui::PopStyleColor();
+        ImGui::Dummy({ 0.f, 6.f });
         const char* armorDesc = Game::IsConfigured()
             ? "Usure de chaque pièce et de l'objet en main."
             : "Offsets à compléter : visible seulement en mode démo.";
-        if (BeginCard("##armor", "Durabilité de l'armure", armorDesc, &s.armorEnabled)) {
+        if (BeginCard("##armor", "Durabilité de l'armure", armorDesc, &s.armorEnabled, true, true, false, 1)) {
             static const char* layouts[] = { "Vertical", "Horizontal" };
             static const char* modes[] = { "Valeur", "%", "Les deux" };
+            static const char* idmodes[] = { "Nom", "Icône" };
+            PosControls("armor", s.armorAnchor, s.armorMargin, s.armorHotbarY, &s.scale, 0.5f, 2.5f, &s.armorBgAlpha);
+            ImGui::Dummy({ 0.f, 2.f });
             RowLabel("Disposition");   Segmented("layout", &s.layout, layouts, 2);
+            RowLabel("Libellé");       Segmented("armidmode", &s.armorDisplayMode, idmodes, 2);
             RowLabel("Affichage");     Segmented("mode", &s.valueMode, modes, 3);
             RowLabel("Alerte sous");   ImGui::SliderInt("##low", &s.lowThreshold, 0, 50, "%d %%");
             RowToggle("Objet en main", &s.showHeldItem);
-            RowToggle("Afficher les slots vides", &s.showEmptySlots);
         }
         EndCard();
 
         {
             const bool ok = HealthBars::IsConfigured();
             char desc[320];
-            if (ok) snprintf(desc, sizeof(desc), "Barre de vie au-dessus des entités proches que tu vois (rien à travers les murs).");
+            if (ok) snprintf(desc, sizeof(desc), "Barre de vie au-dessus des entités proches.");
             else    snprintf(desc, sizeof(desc), "Manque dans offsets.ini [entities] : %s", HealthBars::MissingText());
-            if (BeginCard("##health", "Barres de vie", desc, &s.healthEnabled, ok)) {
+            if (BeginCard("##health", "Barres de vie", desc, &s.healthEnabled, ok, true, false, 2)) {
+                // Avertissement anticheat (visible, couleur ambre).
+                ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 180, 60, 255));
+                ImGui::PushTextWrapPos(0.f);
+                ImGui::TextUnformatted("/!\\ Peut être considéré comme un cheat : la plupart des serveurs l'interdisent. À utiliser en solo ou sur un serveur qui l'autorise.");
+                ImGui::PopTextWrapPos();
+                ImGui::PopStyleColor();
+                ImGui::Dummy({ 0.f, 3.f });
                 ImGui::TextDisabled("Afficher pour");
-                RowToggle("Joueurs", &s.hpPlayers);
                 RowToggle("Animaux (vaches, cochons, loups...)", &s.hpAnimals);
                 RowToggle("Monstres (zombies, squelettes...)", &s.hpMonsters);
                 RowToggle("Autres (villageois, golems...)", &s.hpOthers);
                 ImGui::Dummy({ 0.f, 2.f });
                 ImGui::Separator();
                 ImGui::Dummy({ 0.f, 2.f });
-                RowLabel("Distance max");  ImGui::SliderFloat("##hpdist", &s.hpMaxDistance, 4.f, 64.f, "%.0f blocs");
+                RowLabel("Distance max");  RecoSliderFloat("##hpdist", &s.hpMaxDistance, 4.f, 64.f, "%.0f blocs", 16.f, "16 blocs");
                 RowLabel("Taille");        ImGui::SliderFloat("##hpscale", &s.hpBarScale, 0.5f, 2.f, "%.2fx");
-                RowLabel("Calibrage FOV"); ImGui::SliderFloat("##fov", &s.fov, 30.f, 110.f, "%.0f°");
                 RowToggle("Afficher la valeur (15/20)", &s.hpShowValue);
-                RowToggle("Afficher le nom des joueurs", &s.hpShowNames);
+                RowToggle("Afficher le nom de l'entité", &s.hpShowName);
                 RowToggle("Masquer si vie pleine", &s.hpHideFull);
-                ImGui::TextDisabled("Si les barres sont décalées, ajuste « Calibrage FOV ».");
             }
             EndCard();
         }
 
         {
-            const bool ok = OwnNametag::IsConfigured();
-            BeginCard("##nametag", "Mon nametag en F5",
-                      ok ? "Affiche ton pseudo au-dessus de ta tête en vue à la troisième personne."
-                         : "Section [nametag] de offsets.ini à compléter (et [player]).",
-                      &s.showOwnNametag, ok);
+            const bool ok = ThirdPersonNametag::IsConfigured();
+            BeginCard("##tpnametag", "Nametag en 3e personne",
+                      ok ? "Affiche ton propre pseudo au-dessus de ta tête en vue à la troisième personne (F5)."
+                         : "Signature introuvable sur cette version.",
+                      &s.thirdPersonNametag, ok, false);
             EndCard();
         }
 
@@ -378,35 +635,27 @@ namespace {
                           ok ? "Maintiens la touche pour zoomer, comme avec une longue-vue."
                              : "Section [zoom] de offsets.ini à compléter.",
                           &s.zoomEnabled, ok)) {
+                // Position de l'indicateur en premier (systeme herite + separateur), comme CPS.
+                PosControls("zoom", s.zoomAnchor, s.zoomHudMargin, s.zoomHotbarY, &s.zoomHudScale, 0.6f, 3.0f, &s.zoomBgAlpha);
                 RowLabel("Touche");  KeyBindButton("zoomkey", &s.zoomKey);
                 static const char* modes[] = { "Maintenir", "Basculer" };
                 RowLabel("Mode");    Segmented("zoommode", &s.zoomMode, modes, 2);
                 RowLabel("Niveau");  ImGui::SliderFloat("##zoomfactor", &s.zoomFactor, 2.f, 10.f, "x%.1f");
                 RowToggle("Zoom fluide", &s.zoomSmooth);
+                RowToggle("Indicateur à l'écran", &s.zoomIndicator);
                 ImGui::TextDisabled("Le zoom est désactivé quand le chat ou ce menu est ouvert.");
             }
             EndCard();
         }
 
         if (BeginCard("##fps", "Compteur FPS", "Images par seconde, en temps réel.", &s.fpsEnabled)) {
-            // Position
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted("Position");
-            ImGui::SameLine(g_cardX0 + g_cardW * 0.40f);
-            ImGui::BeginGroup();
-            AnchorPicker(&s.fpsAnchor);
-            const bool freePos = s.fpsAnchor == 0;
-            if (ImGui::RadioButton("Position libre (à faire glisser)", freePos)) s.fpsAnchor = 0;
-            ImGui::EndGroup();
-            ImGui::Dummy({ 0.f, 2.f });
-
-            RowLabel("Taille");         ImGui::SliderFloat("##fpsscale", &s.fpsScale, 0.6f, 3.f, "%.1fx");
-            if (!freePos) { RowLabel("Marge du bord"); ImGui::SliderFloat("##fpsmargin", &s.fpsMargin, 0.f, 80.f, "%.0f px"); }
+            // Position (systeme unifie : ancres + hotbar + ecart + hauteur)
+            PosControls("fps", s.fpsAnchor, s.fpsMargin, s.fpsHotbarY, &s.fpsScale, 0.6f, 3.0f, &s.fpsBgAlpha);
 
             static const char* colorModes[] = { "Accent", "Selon perf.", "Blanc" };
             RowLabel("Couleur");        Segmented("fpscolor", &s.fpsColorMode, colorModes, 3);
             if (s.fpsColorMode == 1) {
-                RowLabel("FPS visés");  ImGui::SliderInt("##fpstarget", &s.fpsTarget, 30, 240, "%d");
+                RowLabel("FPS visés");  RecoSliderInt("##fpstarget", &s.fpsTarget, 30, 240, "%d", 60, "60");
             }
             static const char* rates[] = { "Rapide", "Normal", "Lent" };
             int rate = s.fpsInterval <= 0.15f ? 0 : s.fpsInterval <= 0.4f ? 1 : 2;
@@ -419,15 +668,40 @@ namespace {
         }
         EndCard();
 
+        if (BeginCard("##cpscombo", "CPS, Combo & Reach", "Clics par seconde, série de coups et portée, dans un même panneau.", &s.cpsComboEnabled)) {
+            // Un seul panneau : position + taille partagees (systeme unifie).
+            PosControls("cps", s.cpsAnchor, s.cpsMargin, s.cpsHotbarY, &s.cpsScale, 0.6f, 2.5f, &s.cpsBgAlpha);
+
+            ImGui::Dummy({ 0.f, 6.f }); ImGui::Separator(); ImGui::Dummy({ 0.f, 6.f });
+            // CPS
+            RowToggle("Afficher le CPS", &s.cpsEnabled);
+            if (s.cpsEnabled) RowToggle("Inclure le clic droit", &s.cpsShowRight);
+            // Combo
+            RowToggle("Afficher le combo", &s.comboEnabled);
+            if (s.comboEnabled) RowToggle("Afficher le record", &s.comboShowMax);
+            // Reach (portee du dernier coup)
+            RowToggle("Afficher la portée (reach)", &s.reachEnabled);
+            RowToggle("Afficher la portée reçue", &s.reachTakenEnabled);
+            if (s.reachTakenEnabled) ImGui::TextDisabled("Portée des coups reçus (surtout fiable en monde local).");
+            // Delai d'inactivite commun (combo + reach) : visible si l'un d'eux est actif.
+            if (s.comboEnabled || s.reachEnabled || s.reachTakenEnabled) {
+                RowLabelHelp("Pause (ms)", "Délai d'inactivité au bout duquel le combo ET les "
+                             "valeurs de portée (reach / reach reçue) retombent à zéro. "
+                             "Ex. 1000 ms = tout s'efface si rien ne se passe pendant 1 seconde.");
+                ImGui::SliderInt("##comboreset", &s.comboResetMs, 250, 3000, "%d ms");
+            }
+        }
+        EndCard();
+
         ImGui::TextDisabled("Astuce : menu ouvert, fais glisser les éléments du HUD pour les déplacer.");
     }
 
     void PageMovement(Settings& s) {
         const bool ok = AutoSprint::IsConfigured();
         BeginCard("##sprint", "Auto-sprint",
-                  ok ? "Sprinte automatiquement quand tu avances. Les règles du jeu s'appliquent."
-                     : "Section [autosprint] de offsets.ini à compléter.",
-                  &s.autoSprint, ok);
+                  ok ? "Sprinte automatiquement quand tu avances. Les règles du jeu s'appliquent (faim, etc.)."
+                     : "Indisponible.",
+                  &s.autoSprint, ok, false);
         EndCard();
     }
 
@@ -442,23 +716,7 @@ namespace {
     }
 
     void PageChat(Settings&) {
-        static char input[256] = "";
         const bool busy = ChatSender::Busy();
-
-        if (BeginCard("##send", "Envoyer dans le chat",
-                      "Message, ou commande commençant par /. Le menu se ferme le temps de l'envoi.")) {
-            ImGui::Dummy({ 0.f, 2.f });
-            const float bw = 110.f;
-            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - bw - 8.f);
-            const bool enter = ImGui::InputTextWithHint("##chatinput", "/time set day", input, sizeof(input),
-                                                        ImGuiInputTextFlags_EnterReturnsTrue);
-            ImGui::SameLine();
-            ImGui::BeginDisabled(busy || !input[0]);
-            const bool click = AccentButton(busy ? "Envoi..." : "Envoyer", { bw, 0.f });
-            ImGui::EndDisabled();
-            if ((enter || click) && input[0] && ChatSender::Send(input)) input[0] = 0;
-        }
-        EndCard();
 
         static bool edit = false;
         auto& cmds = Config::Commands();
@@ -727,49 +985,132 @@ namespace {
     }
 
     void PageSettings(Settings& s) {
-        if (BeginCard("##ui", "Interface", "Taille et apparence du HUD et du menu.")) {
+        // --- Apparence ---------------------------------------------------------------
+        if (BeginCard("##appearance", "Apparence", "Taille, transparence et couleur de l'interface.")) {
             ImGui::Dummy({ 0.f, 2.f });
             RowLabel("Taille du HUD");    ImGui::SliderFloat("##scale", &s.scale, 0.5f, 2.5f, "%.2fx");
-            RowLabel("Opacité du fond");  ImGui::SliderFloat("##alpha", &s.bgAlpha, 0.f, 1.f, "%.2f");
+            RowLabel("Opacité du fond (armure)");
+            { int pct = (int)(s.armorBgAlpha * 100.f + 0.5f);
+              if (ImGui::SliderInt("##alpha", &pct, 0, 100, "%d%%")) s.armorBgAlpha = pct / 100.f; }
             RowLabel("Couleur d'accent"); ColorSwatches(s.accent);
-            static const char* blockModes[] = { "Discret", "Alt+Tab", "Désactivé" };
-            RowLabel("Blocage du jeu"); Segmented("blockmode", &s.menuBlockMode, blockModes, 3);
-            ImGui::PushTextWrapPos(0.f);
-            ImGui::TextDisabled(s.menuBlockMode == 0
-                ? "Discret : caméra, clics et touches bloqués dans le menu, sans mettre le jeu en pause."
-                : s.menuBlockMode == 1
-                ? "Alt+Tab : blocage le plus sûr, mais le jeu peut se mettre en pause (solo)."
-                : "Désactivé : seul le blocage GameInput / Raw Input est utilisé.");
-            ImGui::PopTextWrapPos();
+            RowToggle("Rainbow (accent animé)", &s.accentRainbow);
+            if (s.accentRainbow) {
+                RowLabel("Vitesse du rainbow");
+                int pct = (int)(s.accentRainbowSpeed * 100.f + 0.5f);
+                if (ImGui::SliderInt("##rbspeed", &pct, 5, 100, "%d%%")) s.accentRainbowSpeed = pct / 100.f;
+            }
         }
         EndCard();
 
-        if (BeginCard("##about", "À propos de Nexus", "Client Minecraft Bedrock")) {
+        // --- Comportement du menu ----------------------------------------------------
+        if (BeginCard("##behavior", "Comportement du menu", "Comment le jeu est bloqué quand le menu est ouvert.")) {
             ImGui::Dummy({ 0.f, 2.f });
-            RowLabel("Version");    ImGui::TextUnformatted(Credits::kVersion);
-            RowLabel("Créé par");   ImGui::TextColored(Accent(), "%s", Credits::kCreatedBy);
-            RowLabel("Signatures"); ImGui::TextUnformatted(Credits::kSignaturesBy);
-            ImGui::PushTextWrapPos(0.f);
-            ImGui::TextDisabled("Le client (launcher, DLL, menu et modules) a été écrit par Claude. "
-                                "%s a trouvé les signatures et offsets du jeu et testé le client en jeu.",
-                                Credits::kSignaturesBy);
-            ImGui::PopTextWrapPos();
-        }
-        EndCard();
+            RowLabel("Blocage du jeu");
 
-        if (BeginCard("##session", "Session", "Les réglages sont aussi sauvegardés à la fermeture du menu.")) {
-            ImGui::Dummy({ 0.f, 2.f });
-            const float w = (ImGui::GetContentRegionAvail().x - 8.f) * 0.5f;
-            ImGui::PushStyleColor(ImGuiCol_Button, Accent(0.85f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Accent());
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.05f, 0.05f, 0.06f, 1.f));
-            if (ImGui::Button("Sauvegarder", { w, 0.f })) Config::SaveSettings();
+            // Deux choix : Discret (recommande, en dore) et Desactive. menuBlockMode : 0 = discret, 2 = desactive.
+            const ImVec4 gold(1.00f, 0.78f, 0.28f, 1.f), goldHi(1.00f, 0.85f, 0.42f, 1.f);
+            const bool discret = s.menuBlockMode != 2;
+            const float totalW = ImGui::GetContentRegionAvail().x;
+            const float gap = 6.f, h = ImGui::GetFrameHeight();
+            const float cellW = (totalW - gap) / 2.f;
+            const ImVec2 start = ImGui::GetCursorScreenPos();
+
+            ImGui::SetCursorScreenPos(start);
+            ImGui::PushStyleColor(ImGuiCol_Button, discret ? gold : kFrame);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, discret ? goldHi : kFrameHov);
+            ImGui::PushStyleColor(ImGuiCol_Text, discret ? ImVec4(0.12f, 0.08f, 0.02f, 1.f) : kText);
+            if (ImGui::Button("Discret", { cellW, h })) s.menuBlockMode = 0;
             ImGui::PopStyleColor(3);
+            const ImVec2 dMin = ImGui::GetItemRectMin(), dMax = ImGui::GetItemRectMax();
+
+            ImGui::SetCursorScreenPos({ start.x + cellW + gap, start.y });
+            ImGui::PushStyleColor(ImGuiCol_Button, !discret ? ImVec4(0.55f, 0.18f, 0.20f, 1.f) : kFrame);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, !discret ? ImVec4(0.68f, 0.22f, 0.24f, 1.f) : kFrameHov);
+            if (ImGui::Button("Désactivé", { cellW, h })) s.menuBlockMode = 2;
+            ImGui::PopStyleColor(2);
+
+            ImGui::SetCursorScreenPos(start);
+            ImGui::Dummy({ totalW, h });
+
+            // Petit badge "recommandé" en haut a droite du bouton Discret, qui pulse (grandit/retrecit).
+            {
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                const char* tag = "RECOMMANDÉ";
+                const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(ImGui::GetTime()) * 3.0f);
+                const float fs = ImGui::GetFontSize() * 0.58f * (1.0f + 0.14f * pulse);
+                const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.f, tag);
+                const float padx = 5.f, pady = 2.f;
+                // En haut a gauche, debordant nettement du bouton (coin).
+                const ImVec2 bmin(dMin.x - 12.f, dMin.y - 11.f);
+                const ImVec2 bmax(bmin.x + ts.x + padx * 2.f, bmin.y + ts.y + pady * 2.f);
+                const int bgA = 170 + static_cast<int>(70 * pulse);
+                dl->AddRectFilled(bmin, bmax, IM_COL32(28, 18, 4, bgA), (ts.y + pady * 2.f) * 0.5f);
+                dl->AddText(ImGui::GetFont(), fs, { bmin.x + padx, bmin.y + pady }, IM_COL32(255, 224, 130, 255), tag);
+            }
+
+            ImGui::Dummy({ 0.f, 2.f });
+            ImGui::PushStyleColor(ImGuiCol_Text, kTextDim);
+            ImGui::PushTextWrapPos(0.f);
+            ImGui::TextUnformatted(discret
+                ? "Caméra, clics et touches bloqués dans le menu, sans mettre le jeu en pause."
+                : "Le jeu continue de recevoir la souris et le clavier dans le menu (déconseillé).");
+            ImGui::PopTextWrapPos();
+            ImGui::PopStyleColor();
+
+            ImGui::Dummy({ 0.f, 6.f });
+            RowToggle("Message d'accueil", &s.welcomeMessage);
+            ImGui::PushStyleColor(ImGuiCol_Text, kTextDim);
+            ImGui::PushTextWrapPos(0.f);
+            ImGui::TextUnformatted("À l'arrivée dans un monde ou un serveur, affiche quelques secondes comment ouvrir le menu et la version de Nexus.");
+            ImGui::PopTextWrapPos();
+            ImGui::PopStyleColor();
+        }
+        EndCard();
+
+        // --- Données & session -------------------------------------------------------
+        if (BeginCard("##data", "Données & session", "Tes réglages sont dans %APPDATA%\\Nexus (conservés même après désinstallation).")) {
+            ImGui::Dummy({ 0.f, 2.f });
+            const float w3 = (ImGui::GetContentRegionAvail().x - 16.f) / 3.f;
+            if (AccentButton("Sauvegarder", { w3, 0.f })) Config::SaveSettings();
             ImGui::SameLine();
+            if (ImGui::Button("Dossier des réglages", { w3, 0.f }))
+                ShellExecuteW(nullptr, L"open", Config::DataFolder().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.45f, 0.14f, 0.22f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.65f, 0.18f, 0.28f, 1.f));
+            if (ImGui::Button("Réinitialiser", { w3, 0.f })) ImGui::OpenPopup("##resetconfirm");
+            ImGui::PopStyleColor(2);
+
+            if (ImGui::BeginPopup("##resetconfirm")) {
+                ImGui::TextUnformatted("Remettre tous les réglages par défaut ?");
+                ImGui::Dummy({ 0.f, 4.f });
+                if (AccentButton("Oui, réinitialiser", { 160.f, 0.f })) { Config::ResetSettings(); ImGui::CloseCurrentPopup(); }
+                ImGui::SameLine();
+                if (ImGui::Button("Annuler", { 90.f, 0.f })) ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();
+            }
+            ImGui::Dummy({ 0.f, 2.f });
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.16f, 0.18f, 1.f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.70f, 0.20f, 0.22f, 1.f));
-            if (ImGui::Button("Décharger (FIN)", { w, 0.f })) Client::RequestUnload();
+            if (ImGui::Button("Décharger Nexus (FIN)", { -FLT_MIN, 0.f })) Client::RequestUnload();
             ImGui::PopStyleColor(2);
+        }
+        EndCard();
+
+        // --- A propos ----------------------------------------------------------------
+        if (BeginCard("##about", "À propos", "Nexus · client Minecraft Bedrock")) {
+            ImGui::Dummy({ 0.f, 2.f });
+            RowLabel("Version");    ImGui::TextColored(Accent(), "%s", Credits::kVersion);
+            RowLabel("Créé par");   ImGui::TextUnformatted(Credits::kCreatedBy);
+            RowLabel("Signatures"); ImGui::TextUnformatted(Credits::kSignaturesBy);
+            RowLabel("Versions");   ImGui::TextUnformatted(Credits::kVersionsBy);
+            ImGui::Dummy({ 0.f, 2.f });
+            ImGui::PushStyleColor(ImGuiCol_Text, kTextDim);
+            ImGui::PushTextWrapPos(0.f);
+            ImGui::TextUnformatted("Le client (launcher, DLL, menu et modules) a été écrit par Claude ; "
+                                   "Zoumi a trouvé les signatures du jeu et testé le client.");
+            ImGui::PopTextWrapPos();
+            ImGui::PopStyleColor();
         }
         EndCard();
     }
@@ -822,22 +1163,27 @@ namespace {
         }
         EndCard();
 
-        BeginCard("##demo", "Mode démo", "Affiche de fausses valeurs pour tester le HUD sans offsets.", &s.demoMode);
+        BeginCard("##demo", "Mode démo", "Affiche de fausses valeurs pour tester le HUD sans offsets.", &s.demoMode, true, false);
         EndCard();
 
         ImGui::TextDisabled("Journal détaillé : Nexus.log, à côté de la DLL.");
     }
 
-    struct Tab { const char* name; const char* subtitle; void (*draw)(Settings&); };
+    struct Tab { const char* name; const char* subtitle; void (*draw)(Settings&); bool devOnly; };
     const Tab kTabs[] = {
-        { "Visuel",     "Éléments affichés à l'écran",        PageVisual },
-        { "Mouvement",  "Aides au déplacement",               PageMovement },
-        { "Chat",       "Messages et commandes rapides",      PageChat },
-        { "Discord",    "Statut Rich Presence",               PageDiscord },
-        { "Paramètres", "Apparence et session",               PageSettings },
-        { "Diagnostic", "État des signatures et des offsets", PageDiagnostic },
-        { "Journal",    "Messages du client en direct",       PageLogs },
+        { "Visuel",     "Éléments affichés à l'écran",        PageVisual,     false },
+        { "Mouvement",  "Aides au déplacement",               PageMovement,   false },
+        { "Chat",       "Messages et commandes rapides",      PageChat,       false },
+        { "Discord",    "Statut Rich Presence",               PageDiscord,    false },
+        { "Paramètres", "Apparence et session",               PageSettings,   false },
+        { "Diagnostic", "État des signatures et des offsets", PageDiagnostic, true  },
+        { "Journal",    "Messages du client en direct",       PageLogs,       false },
     };
+
+    // Build de developpement : la version contient "-dev". Les onglets "devOnly" n'apparaissent
+    // que dans ces builds, pas dans les versions publiees.
+    bool IsDevBuild() { return std::strstr(Credits::kVersion, "-dev") != nullptr; }
+    bool TabVisible(int i) { return !kTabs[i].devOnly || IsDevBuild(); }
 }
 
 // ---- Panneau de pre-commandes a cote du chat du jeu ------------------------------------
@@ -947,27 +1293,96 @@ namespace {
 }
 
 void Ui::ToggleMenu() {
+    // Anti-rebond : evite qu'un seul appui n'ouvre puis referme (deux fenetres recoivent la touche).
+    static ULONGLONG lastToggle = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (now - lastToggle < 180) return;
+    lastToggle = now;
+
     g_menuOpen = !g_menuOpen;
     InputHook::NotifyMenuChanged(g_menuOpen);
+    FocusGrab::OnMenuToggled(g_menuOpen);
 }
 bool Ui::IsMenuOpen() { return g_menuOpen; }
 
+// Couleur d'accent courante, partagee par le menu et le HUD. Anime (arc-en-ciel) si Rainbow actif.
+// La teinte rainbow est calculee une seule fois par frame (mise en cache) : AccentColor est
+// appele des dizaines de fois par image, inutile de refaire la conversion HSV a chaque appel.
+ImVec4 Ui::AccentColor(float a) {
+    const auto& s = Config::GetSettings();
+    if (s.accentRainbow) {
+        static int   s_frame = -1;
+        static float s_r = 1.f, s_g = 1.f, s_b = 1.f;
+        const int fr = ImGui::GetFrameCount();
+        if (fr != s_frame) {
+            s_frame = fr;
+            float hue = (float)(ImGui::GetTime() * s.accentRainbowSpeed);
+            hue -= std::floor(hue);                  // partie fractionnaire -> teinte 0..1
+            ImGui::ColorConvertHSVtoRGB(hue, 0.72f, 1.00f, s_r, s_g, s_b);
+        }
+        return { s_r, s_g, s_b, a };
+    }
+    const auto& c = s.accent;
+    return { c[0], c[1], c[2], a };
+}
+
 void Ui::Render() {
     ApplyTheme();
+
+    // INSER (ouvrir/fermer) et FIN (decharger) detectees ici, quelle que soit la fenetre active.
+    {
+        static bool insPrev = false, endPrev = false;
+        const bool insNow = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
+        const bool endNow = (GetAsyncKeyState(VK_END) & 0x8000) != 0;
+        if (insNow && !insPrev) Ui::ToggleMenu();
+        if (endNow && !endPrev) Client::RequestUnload();
+        insPrev = insNow;
+        endPrev = endNow;
+    }
 
     const bool open = g_menuOpen;
     ImGui::GetIO().MouseDrawCursor = open;   // le jeu cache le curseur : ImGui dessine le sien
     if (open) ClipCursor(nullptr);
 
+    // Changement de resolution (passage plein ecran, changement d'ecran) : on rescale les
+    // elements de HUD en position libre proportionnellement, pour qu'ils gardent la meme
+    // place relative a l'ecran. Les elements ancres (coins/bords) restent en place d'eux-memes.
+    {
+        static ImVec2 lastDisp = { 0.f, 0.f };
+        const ImVec2 disp = ImGui::GetIO().DisplaySize;
+        if (disp.x > 1.f && disp.y > 1.f) {
+            if (lastDisp.x > 1.f && (disp.x != lastDisp.x || disp.y != lastDisp.y)) {
+                const float sx = disp.x / lastDisp.x, sy = disp.y / lastDisp.y;
+                Settings& st = Config::GetSettings();
+                auto reflow = [&](int anchor, float& x, float& y) { if (anchor <= 0) { x *= sx; y *= sy; } };
+                reflow(st.fpsAnchor,   st.fpsX,     st.fpsY);
+                reflow(st.cpsAnchor,   st.cpsX,     st.cpsY);
+                reflow(st.armorAnchor, st.armorX,   st.armorY);
+                reflow(st.zoomAnchor,  st.zoomHudX, st.zoomHudY);
+            }
+            lastDisp = disp;
+        }
+    }
+
+    Hud::ResetDrag();            // avant de dessiner le HUD
     ChatOverlay::Sample(InputHook::Window());
     HealthBars::Render();        // dessine en arriere-plan, sous le HUD et le menu
+    ThirdPersonNametag::Update(); // patch nametag uniquement en 3e personne
+    AutoSprint::Update();         // force le sprint si active
     Zoom::Update();
     Hud::RenderArmor(open);
     Hud::RenderFps(open);
-    if (open) Menu::Render();
+    Hud::RenderCpsCombo(open);
+    Hud::RenderZoom(open);
+    Hud::RenderWelcome();        // message d'accueil a l'arrivee dans un monde/serveur
+    if (open) Menu::Render();    // s'efface si on deplace un element du HUD (voir Menu::Render)
     else RenderChatOverlay();
 
-    if (g_wasOpen && !open) Config::SaveSettings(); // sauvegarde a la fermeture du menu
+    // Sauvegarde : a la fermeture du menu, et des qu'un deplacement de HUD se termine
+    static bool wasDragging = false;
+    const bool dragging = Hud::IsDragging();
+    if ((g_wasOpen && !open) || (wasDragging && !dragging)) Config::SaveSettings();
+    wasDragging = dragging;
     g_wasOpen = open;
 }
 
@@ -975,8 +1390,13 @@ void Menu::Render() {
     Settings& s = Config::GetSettings();
     const ImVec2 display = ImGui::GetIO().DisplaySize;
 
-    ImGui::SetNextWindowSize({ 760.f, 500.f }, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize({ 940.f, 640.f }, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(display * 0.5f, ImGuiCond_FirstUseEver, { 0.5f, 0.5f });
+    // Pendant qu'on deplace un element du HUD, le menu s'efface presque entierement
+    // pour voir ou on le pose.
+    const bool draggingHud = Hud::IsDragging();
+    ImGui::SetNextWindowBgAlpha(draggingHud ? 0.05f : 1.f);
+    if (draggingHud) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.15f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 0.f, 0.f });
     const bool visible = ImGui::Begin("##NexusMenu", nullptr,
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
@@ -1024,8 +1444,11 @@ void Menu::Render() {
         ImGui::TextDisabled("Client Bedrock");
         ImGui::Dummy({ 0.f, 10.f });
 
-        for (int i = 0; i < IM_ARRAYSIZE(kTabs); ++i)
-            if (SidebarButton(kTabs[i].name, g_tab == i)) g_tab = i;
+        for (int i = 0; i < IM_ARRAYSIZE(kTabs); ++i) {
+            if (!TabVisible(i)) continue;
+            if (SidebarButton(kTabs[i].name, g_tab == i, kTabs[i].devOnly ? "DEV" : nullptr)) g_tab = i;
+        }
+        if (!TabVisible(g_tab)) g_tab = 0;   // au cas ou l'onglet actif vient d'etre masque
 
         // Raccourcis en bas
         // Raccourcis en bas, alignes avec le texte des onglets
@@ -1089,4 +1512,5 @@ void Menu::Render() {
     ImGui::EndChild();
 
     ImGui::End();
+    if (draggingHud) ImGui::PopStyleVar();   // Alpha
 }

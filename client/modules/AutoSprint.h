@@ -1,9 +1,10 @@
 #pragma once
 
-// Auto-sprint : simule la touche "Sprint" maintenue enfoncee.
-// Le jeu applique toujours ses propres regles (avancer, faim, pas accroupi...).
+// Auto-sprint : force le joueur local a courir en permanence (comme si la touche
+// sprint etait tenue). Le jeu ne court que si tu avances, donc aucun effet a l'arret.
 namespace AutoSprint {
-    bool Init();        // resout la signature et installe le hook (MinHook deja initialise)
+    bool Init();        // conserve pour compatibilite (plus de hook) ; renvoie true
     void Shutdown();
+    void Update();      // chaque frame : applique l'etat sprint selon le reglage
     bool IsConfigured();
 }

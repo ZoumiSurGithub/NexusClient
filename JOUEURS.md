@@ -29,7 +29,7 @@ Lance toujours Minecraft **avec `NexusLauncher.exe`** pour avoir Nexus.
 
 ## Mises à jour
 
-Le launcher vérifie les mises à jour **à chaque lancement**. Quand une nouvelle version existe, elle est **obligatoire** : le launcher la télécharge, vérifie son intégrité, l'installe puis redémarre tout seul. Tes réglages (`client.ini`) et tes commandes (`commands.txt`) sont conservés.
+Le launcher vérifie les mises à jour **à chaque lancement**. Quand une nouvelle version existe, elle est **obligatoire** : le launcher la télécharge, vérifie son intégrité, l'installe puis redémarre tout seul. Tes réglages sont conservés : ils sont rangés dans `%APPDATA%\Nexus` (réglages, commandes, journal), donc ils survivent même à une désinstallation.
 
 Après une mise à jour de **Minecraft**, certaines fonctions (armure, barres de vie, zoom…) peuvent être grisées le temps qu'une mise à jour de Nexus sorte : le reste continue de marcher.
 
@@ -39,4 +39,4 @@ Nexus n'ajoute pas d'avantage injuste (les barres de vie ne s'affichent pas à t
 
 ## Désinstaller
 
-Supprime simplement le dossier de Nexus. Minecraft n'est pas modifié.
+Supprime simplement le dossier de Nexus. Minecraft n'est pas modifié. Tes réglages restent dans `%APPDATA%\Nexus` ; supprime ce dossier aussi si tu veux tout effacer.

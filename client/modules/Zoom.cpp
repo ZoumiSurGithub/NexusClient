@@ -2,31 +2,46 @@
 #include "core/Config.h"
 #include "core/SigScan.h"
 #include "core/Logger.h"
-#include "hooks/InputHook.h"
 #include "modules/ChatOverlay.h"
 #include "ui/Ui.h"
 #include <windows.h>
 #include <MinHook.h>
 #include <atomic>
+#include <cstdint>
 #include <cmath>
 
-// Fonction hookee : float LevelRendererPlayer::getFov(float partialTicks, bool applyEffects)
-// (prototype utilise par la plupart des clients Bedrock ; voir docs/TROUVER_LES_OFFSETS.md)
+// Methode Latite (fiable sur cette version) : on hooke LevelRenderer::renderLevel et,
+// apres l'appel original, on multiplie les champs fovX/fovY du LevelRendererPlayer par
+// le facteur de zoom. Un facteur de 4 = x4. Pas besoin de hooker getFov.
 namespace {
-    using GetFovFn = float (__fastcall*)(void* self, float partialTicks, bool applyEffects);
+    using RenderLevelFn = void (__fastcall*)(void* lvl, void* screenCtx, void* unk);
 
-    uintptr_t g_target = 0;
-    GetFovFn  g_original = nullptr;
+    uintptr_t     g_target = 0;
+    RenderLevelFn g_original = nullptr;
 
     std::atomic<float> g_targetFactor{ 1.f };   // 1 = pas de zoom, 4 = zoom x4
-    float g_currentFactor = 1.f;                // valeur lissee (thread du jeu)
+    float     g_currentFactor = 1.f;            // valeur lissee (thread du jeu)
     ULONGLONG g_lastCall = 0;
 
     bool g_toggled = false;
     bool g_keyWasDown = false;
 
-    float __fastcall HkGetFov(void* self, float partialTicks, bool applyEffects) {
-        const float fov = g_original(self, partialTicks, applyEffects);
+    // Ecrit les champs fov (code POD : compatible __try, pas d'objets C++ a derouler).
+    void ApplyFov(void* lvl, float factor) {
+        const Offsets& o = Config::GetOffsets();
+        __try {
+            void* lrp = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(lvl) + o.lrpOffset);
+            if (!lrp) return;
+            float* fx = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(lrp) + o.fovXOffset);
+            float* fy = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(lrp) + o.fovYOffset);
+            *fx *= factor;
+            *fy *= factor;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+
+    void __fastcall HkRenderLevel(void* lvl, void* screenCtx, void* unk) {
+        g_original(lvl, screenCtx, unk);
+        if (!lvl) return;
 
         const Settings& s = Config::GetSettings();
         const float target = g_targetFactor.load();
@@ -37,23 +52,23 @@ namespace {
         if (s.zoomSmooth) g_currentFactor += (target - g_currentFactor) * std::fmin(1.f, dt * 12.f);
         else              g_currentFactor = target;
 
-        return g_currentFactor > 1.001f ? fov / g_currentFactor : fov;
+        if (g_currentFactor > 1.001f) ApplyFov(lvl, g_currentFactor);
     }
 
     bool KeyDown(int vk) { return vk > 0 && (GetAsyncKeyState(vk) & 0x8000) != 0; }
 }
 
 bool Zoom::Init() {
-    g_target = SigScan::Find(Config::GetOffsets().zoomFovSig, "zoom.getFov_signature");
+    g_target = SigScan::Find(Config::GetOffsets().zoomRenderLevelSig, "zoom.renderlevel_signature");
     if (!g_target) return false;
     auto target = reinterpret_cast<void*>(g_target);
-    if (MH_CreateHook(target, &HkGetFov, reinterpret_cast<void**>(&g_original)) != MH_OK ||
+    if (MH_CreateHook(target, &HkRenderLevel, reinterpret_cast<void**>(&g_original)) != MH_OK ||
         MH_EnableHook(target) != MH_OK) {
         LOG_ERROR("Impossible d'installer le hook de zoom");
         g_target = 0;
         return false;
     }
-    LOG_INFO("Hook zoom installe");
+    LOG_INFO("Hook zoom installe (renderLevel 0x%p)", target);
     return true;
 }
 
@@ -83,3 +98,4 @@ void Zoom::Update() {
 
 bool Zoom::IsConfigured() { return g_target != 0; }
 bool Zoom::IsZooming() { return g_targetFactor.load() > 1.f; }
+float Zoom::CurrentFactor() { return g_currentFactor; }

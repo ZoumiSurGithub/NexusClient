@@ -8,6 +8,7 @@
 #include <psapi.h>
 #include <MinHook.h>
 #include <atomic>
+#include <vector>
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
@@ -40,6 +41,31 @@ namespace {
     GetHwndFn         o_GetFocus = nullptr;
     GetHwndFn         o_GetActiveWindow = nullptr;
 
+    using KeyStateFn = SHORT(WINAPI*)(int);
+    KeyStateFn o_GetAsyncKeyState = nullptr;
+    KeyStateFn o_GetKeyState = nullptr;
+
+    // Vrai si l'appel vient de NOTRE DLL (on ne se bloque pas nous-memes : zoom, bind de touche...)
+    bool CalledBySelf(void* ret) {
+        static uintptr_t base = 0; static size_t size = 0;
+        if (!base) {
+            HMODULE self = nullptr;
+            if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   reinterpret_cast<LPCWSTR>(&CalledBySelf), &self)) {
+                MODULEINFO mi{};
+                if (GetModuleInformation(GetCurrentProcess(), self, &mi, sizeof(mi))) {
+                    base = reinterpret_cast<uintptr_t>(mi.lpBaseOfDll);
+                    size = mi.SizeOfImage;
+                }
+            }
+        }
+        const auto r = reinterpret_cast<uintptr_t>(ret);
+        return base && r >= base && r < base + size;
+    }
+    bool IsMouseButtonVk(int vk) {
+        return vk == VK_LBUTTON || vk == VK_RBUTTON || vk == VK_MBUTTON || vk == VK_XBUTTON1 || vk == VK_XBUTTON2;
+    }
+
     // Vrai si l'appel vient du code de Minecraft (pas de notre DLL, ni d'ImGui)
     bool CalledByGame(void* ret) {
         static const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
@@ -52,6 +78,20 @@ namespace {
         return r >= base && r < base + size;
     }
     bool FakeFocusActive() { return Ui::IsMenuOpen() && Config::GetSettings().menuBlockMode != 2; }
+
+    // Les clics ne doivent pas atteindre le jeu quand une surface de Nexus capte la souris.
+    bool NexusWantsMouse() { return Ui::IsMenuOpen() || ChatOverlay::IsHovered(); }
+
+    // L'interface du jeu lit souvent l'etat du bouton via GetAsyncKeyState / GetKeyState :
+    // on masque les boutons de souris pour le jeu (pas pour notre propre code).
+    SHORT WINAPI HkGetAsyncKeyState(int vk) {
+        if (NexusWantsMouse() && IsMouseButtonVk(vk) && !CalledBySelf(_ReturnAddress())) return 0;
+        return o_GetAsyncKeyState(vk);
+    }
+    SHORT WINAPI HkGetKeyState(int vk) {
+        if (NexusWantsMouse() && IsMouseButtonVk(vk) && !CalledBySelf(_ReturnAddress())) return 0;
+        return o_GetKeyState(vk);
+    }
 
     std::atomic<unsigned> g_counts[MouseBlock::CounterCount]{};
     unsigned g_rates[MouseBlock::CounterCount]{};
@@ -95,18 +135,118 @@ namespace {
         ReleaseSRWLockExclusive(&g_lock);
     }
 
-    // Un hook par module GameInput eventuel (GameInput.dll et GameInputRedist.dll)
-    template <int N>
-    struct MouseHook {
-        static inline GetMouseStateFn original = nullptr;
-        static inline size_t wheelOffset = 32;
-        static bool __fastcall Detour(void* reading, void* state) {
-            const bool ok = original(reading, state);
-            Count(MouseBlock::GameInputMouse);
-            if (ok && state) Filter(static_cast<uint8_t*>(state), wheelOffset);
-            return ok;
+    // Detection auto-correctrice : le bon GetMouseState n'est pas toujours au meme index
+    // de vtable selon la version de GameInput. On recense tous les candidats plausibles,
+    // on en accroche un, et si le jeu ne l'appelle pas on passe au suivant jusqu'a trouver
+    // celui qui recoit du trafic. Un seul hook actif a la fois.
+    struct Candidate { void* func; size_t wheel; const wchar_t* mod; int idx; int ver; };
+    std::vector<Candidate> g_candidates;
+    int g_activeCand = -1;
+    void* g_activeFunc = nullptr;
+    GetMouseStateFn g_activeOriginal = nullptr;
+    size_t g_activeWheel = 32;
+    std::atomic<uint64_t> g_mouseCalls{ 0 };   // total, jamais remis a zero
+    uint64_t g_callsAtHook = 0;
+    ULONGLONG g_hookTime = 0;
+    bool g_locked = false;      // candidat confirme (le jeu l'appelle)
+    bool g_cycledAll = false;
+
+    bool __fastcall HkMouse(void* reading, void* state) {
+        const bool ok = g_activeOriginal(reading, state);
+        g_mouseCalls.fetch_add(1, std::memory_order_relaxed);
+        Count(MouseBlock::GameInputMouse);
+        if (ok && state) Filter(static_cast<uint8_t*>(state), g_activeWheel);
+        return ok;
+    }
+
+    // Declarations anticipees (definitions plus bas)
+    bool SafeCreate(GameInputCreateFn fn, void** out);
+    void SafeRelease(void* obj);
+
+    // ---- Blocage certain : IGameInput::GetCurrentReading (index 4, confirme) ------------
+    // Tout l'input GameInput passe par la. Menu ouvert, on "gele" la lecture souris :
+    // on renvoie toujours la meme lecture capturee a l'ouverture -> delta nul, aucun bouton.
+    using GetCurrentReadingFn = HRESULT(__fastcall*)(void* self, uint32_t kind, void* device, void** out);
+    GetCurrentReadingFn o_GetCurrentReading = nullptr;
+    void* g_gcrTarget = nullptr;
+    void* g_frozenReading = nullptr;
+    bool  g_gcrHooked = false;
+
+    void ReadingAddRef(void* r) {
+        using Fn = ULONG(__fastcall*)(void*);
+        __try { reinterpret_cast<Fn>((*reinterpret_cast<void***>(r))[1])(r); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    void ReadingRelease(void* r) {
+        using Fn = ULONG(__fastcall*)(void*);
+        __try { reinterpret_cast<Fn>((*reinterpret_cast<void***>(r))[2])(r); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+
+    HRESULT __fastcall HkGetCurrentReading(void* self, uint32_t kind, void* device, void** out) {
+        const HRESULT hr = o_GetCurrentReading(self, kind, device, out);
+        if (kind & kGameInputKindMouse) Count(MouseBlock::GameInputReading);
+
+        if (!Ui::IsMenuOpen()) {
+            if (g_frozenReading) { ReadingRelease(g_frozenReading); g_frozenReading = nullptr; }
+            return hr;
         }
-    };
+        if (!(kind & kGameInputKindMouse) || !out) return hr;
+
+        if (!g_frozenReading) {
+            // Premiere lecture pendant le menu : on la capture comme reference figee.
+            if (SUCCEEDED(hr) && *out) { g_frozenReading = *out; ReadingAddRef(g_frozenReading); }
+            return hr;
+        }
+        // Lectures suivantes : on rend la lecture figee (le jeu voit un deplacement nul).
+        if (SUCCEEDED(hr) && *out) ReadingRelease(*out);
+        ReadingAddRef(g_frozenReading);
+        *out = g_frozenReading;
+        return S_OK;
+    }
+
+    void HookGetCurrentReading(const wchar_t* moduleName) {
+        if (g_gcrHooked) return;
+        HMODULE mod = GetModuleHandleW(moduleName);
+        if (!mod) return;
+        auto create = reinterpret_cast<GameInputCreateFn>(GetProcAddress(mod, "GameInputCreate"));
+        if (!create) return;
+        void* gi = nullptr;
+        if (!SafeCreate(create, &gi)) return;
+        void** vt = *reinterpret_cast<void***>(gi);
+        void* target = vt[4];   // GetCurrentReading (on l'appelle deja via cet index)
+        if (MH_CreateHook(target, &HkGetCurrentReading, reinterpret_cast<void**>(&o_GetCurrentReading)) == MH_OK &&
+            MH_EnableHook(target) == MH_OK) {
+            g_gcrTarget = target;
+            g_gcrHooked = true;
+            LOG_INFO("GameInput (%ls) : GetCurrentReading accroche (blocage par gel de la lecture)", moduleName);
+        } else {
+            LOG_WARN("GameInput (%ls) : hook GetCurrentReading impossible", moduleName);
+        }
+        SafeRelease(gi);
+    }
+
+    bool HookCandidate(int i) {
+        if (g_activeFunc) {
+            MH_DisableHook(g_activeFunc);
+            MH_RemoveHook(g_activeFunc);
+            g_activeFunc = nullptr;
+            g_activeOriginal = nullptr;
+        }
+        Candidate& c = g_candidates[i];
+        if (MH_CreateHook(c.func, &HkMouse, reinterpret_cast<void**>(&g_activeOriginal)) == MH_OK &&
+            MH_EnableHook(c.func) == MH_OK) {
+            g_activeFunc = c.func;
+            g_activeWheel = c.wheel;
+            g_activeCand = i;
+            g_callsAtHook = g_mouseCalls.load();
+            g_hookTime = GetTickCount64();
+            LOG_INFO("GameInput : essai candidat %d/%zu (%ls index %d, v%d)", i + 1, g_candidates.size(), c.mod, c.idx, c.ver);
+            snprintf(g_status, sizeof(g_status), "GameInput : test du canal %d/%zu (index %d)...",
+                     i + 1, g_candidates.size(), c.idx);
+            return true;
+        }
+        LOG_WARN("GameInput : hook du candidat %d impossible", i + 1);
+        return false;
+    }
 
     // ---- Appels proteges (pas d'objets C++ dans ces fonctions) ---------------------
     bool SafeCreate(GameInputCreateFn fn, void** out) {
@@ -145,18 +285,17 @@ namespace {
     // Cherche GetMouseState dans la vtable d'une vraie lecture souris.
     // Critere : renvoie true et ecrit les positions (octets 8..23) ; la taille ecrite
     // donne la version de la structure (40 = v0, 56 = v1).
-    bool DetectAndHook(const wchar_t* moduleName, int slot) {
+    void CollectCandidates(const wchar_t* moduleName, int baseVer) {
         HMODULE mod = GetModuleHandleW(moduleName);
-        if (!mod) return false;
+        if (!mod) return;
         auto create = reinterpret_cast<GameInputCreateFn>(GetProcAddress(mod, "GameInputCreate"));
         MODULEINFO mi{};
-        if (!create || !GetModuleInformation(GetCurrentProcess(), mod, &mi, sizeof(mi))) return false;
+        if (!create || !GetModuleInformation(GetCurrentProcess(), mod, &mi, sizeof(mi))) return;
 
         void* gi = nullptr;
-        if (!SafeCreate(create, &gi)) return false;
+        if (!SafeCreate(create, &gi)) return;
 
         void* reading = nullptr;
-        bool hooked = false;
         uint32_t kind = 0;
         if (SafeGetCurrentReading(gi, &reading) && SafeGetKind(reading, kind) && (kind & kGameInputKindMouse)) {
             void** vt = *reinterpret_cast<void***>(reading);
@@ -173,29 +312,16 @@ namespace {
                 const size_t size = (last + 8) & ~size_t(7);
                 if (!wrotePositions || (size != 40 && size != 56)) continue;
 
-                const size_t wheel = size == 56 ? 40 : 24;
-                void* target = vt[idx];
-                void** orig = slot == 0 ? reinterpret_cast<void**>(&MouseHook<0>::original)
-                                        : reinterpret_cast<void**>(&MouseHook<1>::original);
-                void* detour = slot == 0 ? reinterpret_cast<void*>(&MouseHook<0>::Detour)
-                                         : reinterpret_cast<void*>(&MouseHook<1>::Detour);
-                if (slot == 0) MouseHook<0>::wheelOffset = wheel; else MouseHook<1>::wheelOffset = wheel;
-
-                if (MH_CreateHook(target, detour, orig) == MH_OK && MH_EnableHook(target) == MH_OK) {
-                    LOG_INFO("GameInput (%ls) : GetMouseState = vtable[%d], structure v%d", moduleName, idx, size == 56 ? 1 : 0);
-                    snprintf(g_status, sizeof(g_status), "GameInput v%d (index %d) : souris bloquee dans le menu",
-                             size == 56 ? 1 : 0, idx);
-                    hooked = true;
-                } else {
-                    LOG_ERROR("GameInput (%ls) : hook GetMouseState impossible", moduleName);
-                }
-                break;
+                void* func = vt[idx];
+                bool dup = false;
+                for (const auto& c : g_candidates) if (c.func == func) dup = true;
+                if (dup) continue;
+                g_candidates.push_back({ func, size == 56 ? 40u : 24u, moduleName, idx, size == 56 ? 1 : 0 });
+                LOG_INFO("GameInput : candidat (%ls index %d, v%d)", moduleName, idx, size == 56 ? 1 : 0);
             }
-            if (!hooked) LOG_WARN("GameInput (%ls) : GetMouseState introuvable dans la vtable", moduleName);
         }
         if (reading) SafeRelease(reading);
         SafeRelease(gi);
-        return hooked;
     }
 
     // ---- Hooks Win32 de complement -------------------------------------------------
@@ -276,6 +402,8 @@ void MouseBlock::Init() {
     HookApi(L"user32", "GetForegroundWindow", &HkGetForegroundWindow, reinterpret_cast<void**>(&o_GetForegroundWindow));
     HookApi(L"user32", "GetFocus", &HkGetFocus, reinterpret_cast<void**>(&o_GetFocus));
     HookApi(L"user32", "GetActiveWindow", &HkGetActiveWindow, reinterpret_cast<void**>(&o_GetActiveWindow));
+    HookApi(L"user32", "GetAsyncKeyState", &HkGetAsyncKeyState, reinterpret_cast<void**>(&o_GetAsyncKeyState));
+    HookApi(L"user32", "GetKeyState", &HkGetKeyState, reinterpret_cast<void**>(&o_GetKeyState));
     HookApi(L"user32", "ClipCursor", &HkClipCursor, reinterpret_cast<void**>(&o_ClipCursor));
     HookApi(L"user32", "SetCursorPos", &HkSetCursorPos, reinterpret_cast<void**>(&o_SetCursorPos));
 }
@@ -296,22 +424,57 @@ void MouseBlock::Tick() {
         return;
     }
 
-    // Il faut au moins une lecture souris : on reessaie tant que la souris n'a pas bouge.
-    bool any = DetectAndHook(L"GameInputRedist.dll", 0);
-    any |= DetectAndHook(L"GameInput.dll", 1);
-    if (any) g_gameInputDone = true;
-    else if (++g_attempts > 120) {
+    // 1) Recenser les candidats (necessite une lecture souris : on reessaie si vide).
+    if (g_candidates.empty()) {
+        HookGetCurrentReading(L"GameInput.dll");
+        HookGetCurrentReading(L"GameInputRedist.dll");
+        CollectCandidates(L"GameInput.dll", 0);
+        CollectCandidates(L"GameInputRedist.dll", 0);
+        if (g_candidates.empty()) {
+            if (++g_attempts > 120) {
+                g_gameInputDone = true;
+                snprintf(g_status, sizeof(g_status), "GameInput : aucune fonction souris trouvee (voir Nexus.log)");
+            }
+            return;
+        }
+        HookCandidate(0);
+        return;
+    }
+
+    // 2) Le candidat actif recoit-il du trafic ? Sinon, essayer le suivant.
+    if (g_locked) { g_gameInputDone = true; return; }
+    const uint64_t calls = g_mouseCalls.load() - g_callsAtHook;
+    if (calls > 5) {
+        g_locked = true;
+        const Candidate& c = g_candidates[g_activeCand];
+        snprintf(g_status, sizeof(g_status), "GameInput v%d (index %d) : souris bloquee dans le menu", c.ver, c.idx);
+        LOG_INFO("GameInput : canal confirme (index %d, %llu appels)", c.idx, (unsigned long long)calls);
         g_gameInputDone = true;
-        snprintf(g_status, sizeof(g_status), "GameInput : detection impossible (voir Nexus.log)");
+        return;
+    }
+    if (now - g_hookTime > 2500) {   // ce candidat reste muet : suivant
+        const int next = g_activeCand + 1;
+        if (next < static_cast<int>(g_candidates.size())) {
+            HookCandidate(next);
+        } else if (!g_cycledAll) {
+            g_cycledAll = true;
+            HookCandidate(0);   // on reboucle une fois, au cas ou le trafic arrive plus tard
+        } else {
+            // Aucun candidat GameInput n'est appele : le jeu lit la souris autrement.
+            snprintf(g_status, sizeof(g_status),
+                     "Aucun canal GameInput actif : le jeu lit la souris autrement (RawInput/HID).");
+            LOG_WARN("GameInput : aucun des %zu candidats n'est appele par le jeu", g_candidates.size());
+            g_gameInputDone = true;
+        }
     }
 }
 
 const char* MouseBlock::Status() { return g_status; }
-bool MouseBlock::GameInputHooked() { return MouseHook<0>::original || MouseHook<1>::original; }
+bool MouseBlock::GameInputHooked() { return g_gcrHooked || g_locked; }
 
 const char* MouseBlock::CounterName(int c) {
-    static const char* names[] = { "GameInput GetMouseState", "GetRawInputData", "GetRawInputBuffer",
-                                   "GetForegroundWindow (jeu)" };
+    static const char* names[] = { "GameInput GetMouseState", "GameInput GetCurrentReading", "GetRawInputData",
+                                   "GetRawInputBuffer", "GetForegroundWindow (jeu)" };
     return c >= 0 && c < CounterCount ? names[c] : "?";
 }
 

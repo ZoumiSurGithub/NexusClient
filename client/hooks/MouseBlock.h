@@ -14,7 +14,7 @@ namespace MouseBlock {
     bool GameInputHooked();
 
     // Compteurs d'appels (pour savoir quelle voie le jeu utilise vraiment)
-    enum Counter { GameInputMouse, RawInputData, RawInputBuffer, ForegroundCheck, CounterCount };
+    enum Counter { GameInputMouse, GameInputReading, RawInputData, RawInputBuffer, ForegroundCheck, CounterCount };
     const char* CounterName(int c);
     unsigned PerSecond(int c);   // appels par seconde, mesures sur la derniere seconde
 }

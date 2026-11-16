@@ -2,6 +2,7 @@
 #include "DiscordRPC.h"
 #include "Network.h"
 #include "core/Config.h"
+#include "Credits.h"   // version du client
 #include "core/Logger.h"
 #include "game/Game.h"
 #include <windows.h>
@@ -122,7 +123,8 @@ namespace {
         const Settings& s = Config::GetSettings();
         const Network::ServerInfo srv = Network::GetServer();
         Activity a;
-        a.largeText = "Nexus · Minecraft Bedrock";
+        const std::string ver = std::string("Nexus v") + Credits::kVersion;
+        a.largeText = ver + " · Minecraft Bedrock";
         a.image = kDiscordImage;   // logo du client (Art Asset "discord_nexus")
 
         std::string mode;
@@ -146,15 +148,16 @@ namespace {
             }
             if (s.discordShowMotd && !srv.motd.empty())
                 info = info.empty() ? srv.motd : info + " — " + srv.motd;   // les infos d'abord, le MOTD ensuite
-            if (!info.empty()) a.largeText = info;
+            a.largeText = info.empty() ? ver : ver + " · " + info;
             Truncate(a.largeText, 120);
         } else if (Network::IsHostingWorld() || Game::LocalPlayer()) {
             mode = "solo";
             a.details = "En solo";
-            a.state = "Dans un monde";
+            a.state = std::string("Dans un monde · ") + ver;
         } else {
             mode = "menu";
             a.details = "Dans les menus";
+            a.state = ver;
         }
 
         // Le chrono repart a chaque changement (menu -> solo -> serveur...)

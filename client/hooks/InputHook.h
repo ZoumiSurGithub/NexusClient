@@ -11,5 +11,6 @@ namespace InputHook {
 
     // ImGui n'est pas thread-safe : les messages recus sur le thread de la fenetre sont mis
     // en file, puis transmis a ImGui sur le thread de rendu (avant ImGui::NewFrame).
-    void FlushToImGui();  // simule une perte / un retour de focus pour le jeu
+    void FlushToImGui();
+    void QueueMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);   // alimente ImGui depuis une autre fenetre  // simule une perte / un retour de focus pour le jeu
 }
