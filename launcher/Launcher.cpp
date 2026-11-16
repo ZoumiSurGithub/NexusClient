@@ -447,7 +447,23 @@ Featured FetchFeatured(const Config& cfg, Log& log) {
         const std::string logo = JsonField(so, "logo");
         if (logo.rfind("http", 0) == 0) {
             const fs::path lf = cfg.clientsDir / (L"logo_" + std::to_wstring(idx) + L".img");
-            if (HttpDownload(ToWide(logo), lf, log, true)) sv.logoPath = lf.wstring();
+            if (HttpDownload(ToWide(logo), lf, log, true)) {
+                // Verifie que le fichier telecharge est bien une image reconnue.
+                const std::string head = ReadFileBytes(lf);
+                auto starts = [&](const char* sig, size_t n) { return head.size() >= n && memcmp(head.data(), sig, n) == 0; };
+                const bool png  = starts("\x89PNG", 4);
+                const bool jpg  = head.size() >= 2 && (unsigned char)head[0] == 0xFF && (unsigned char)head[1] == 0xD8;
+                const bool gif  = starts("GIF8", 4);
+                const bool bmp  = starts("BM", 2);
+                const bool webp = starts("RIFF", 4) && head.size() >= 12 && memcmp(head.data() + 8, "WEBP", 4) == 0;
+                if (webp)
+                    log.Warn(L"Logo de " + sv.name + L" : WebP non supporte, convertis-le en PNG ou JPG.");
+                else if (!(png || jpg || gif || bmp))
+                    log.Warn(L"Logo de " + sv.name + L" : fichier non reconnu comme image (URL correcte ? lien 'raw' GitHub ?).");
+                sv.logoPath = lf.wstring();
+            } else {
+                log.Warn(L"Logo de " + sv.name + L" : telechargement echoue (" + ToWide(logo) + L").");
+            }
         }
         if (!sv.name.empty() && !sv.address.empty()) out.servers.push_back(std::move(sv));
         ++idx;

@@ -21,6 +21,8 @@
 
 #include <map>
 #include <string>
+#include <fstream>
+#include <filesystem>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -41,11 +43,16 @@ static const LogoTex& GetLogo(const std::wstring& path) {
     if (t.tried) return t;                 // charge une seule fois (l'UI tourne a chaque frame)
     t.tried = true;
     if (path.empty() || !g_device) return t;
-    const int n = WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    std::string p(n > 0 ? n - 1 : 0, '\0');
-    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, &p[0], n, nullptr, nullptr);
+    // Lecture des octets via ifstream (gere les chemins larges), puis decodage en memoire :
+    // evite tout probleme d'encodage de chemin de stbi_load/fopen.
+    std::ifstream f(std::filesystem::path(path), std::ios::binary);
+    std::string bytes;
+    if (f) { f.seekg(0, std::ios::end); bytes.resize((size_t)f.tellg()); f.seekg(0);
+             if (!bytes.empty()) f.read(&bytes[0], (std::streamsize)bytes.size()); }
+    if (bytes.empty()) return t;
     int w = 0, h = 0, ch = 0;
-    unsigned char* data = stbi_load(p.c_str(), &w, &h, &ch, 4);
+    unsigned char* data = stbi_load_from_memory(reinterpret_cast<const stbi_uc*>(bytes.data()),
+                                                (int)bytes.size(), &w, &h, &ch, 4);
     if (!data) return t;
     D3D11_TEXTURE2D_DESC d{}; d.Width = w; d.Height = h; d.MipLevels = 1; d.ArraySize = 1;
     d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.SampleDesc.Count = 1;
@@ -333,43 +340,34 @@ static bool SidebarTab(const char* label, bool selected) {
     return pressed;
 }
 
-// Une tuile "connexion rapide" (logo ou icone serveur par defaut). Renvoie true au clic.
+// Pastille "connexion rapide" compacte (logo seul, nom en infobulle). Renvoie true au clic.
 static bool ServerTile(const Launcher::ServerShortcut& sv, float tile) {
-    ImGui::BeginGroup();
     const LogoTex& logo = GetLogo(sv.logoPath);
     const ImVec2 p = ImGui::GetCursorScreenPos();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const bool clicked = ImGui::InvisibleButton("##logo", ImVec2(tile, tile));
     const bool hov = ImGui::IsItemHovered();
-    const float hv = Anim(ImGui::GetItemID(), hov ? 1.f : 0.f);   // animation de survol
-    const float grow = 3.f * hv;                                   // la tuile se souleve au survol
+    const float hv = Anim(ImGui::GetItemID(), hov ? 1.f : 0.f);
+    const float grow = 2.f * hv;                                   // leger soulevement au survol
     const ImVec2 q(p.x - grow, p.y - grow), pmax(p.x + tile + grow, p.y + tile + grow);
-    if (hv > 0.01f)                                                // ombre/halo sous la tuile
-        dl->AddRectFilled(ImVec2(q.x - 2, q.y + 2), ImVec2(pmax.x + 2, pmax.y + 4), IM_COL32(143, 99, 235, (int)(50 * hv)), 12.f);
-    dl->AddRectFilled(q, pmax, LerpCol(IM_COL32(40, 35, 66, 255), IM_COL32(64, 55, 100, 255), hv), 10.f);
+    const float r = 9.f;
+    if (hv > 0.01f)
+        dl->AddRectFilled(ImVec2(q.x - 2, q.y + 2), ImVec2(pmax.x + 2, pmax.y + 3), IM_COL32(143, 99, 235, (int)(45 * hv)), r + 2);
+    dl->AddRectFilled(q, pmax, LerpCol(IM_COL32(40, 35, 66, 255), IM_COL32(64, 55, 100, 255), hv), r);
     if (logo.srv) {
-        dl->AddImageRounded((ImTextureID)logo.srv, q, pmax, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 10.f);
+        dl->AddImageRounded((ImTextureID)logo.srv, q, pmax, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, r);
     } else {
-        dl->AddRect(q, pmax, kAccent, 10.f, 0, 1.5f);
+        dl->AddRect(q, pmax, kAccent, r, 0, 1.4f);
         const float cxp = (q.x + pmax.x) * 0.5f, cyp = (q.y + pmax.y) * 0.5f;
-        const float uw = 34.f, uh = 11.f, ug = 5.f;
+        const float uw = tile * 0.52f, uh = tile * 0.17f, ug = tile * 0.08f;
         for (int k = 0; k < 2; ++k) {
             const float y0 = cyp - uh - ug * 0.5f + k * (uh + ug);
-            const ImVec2 a(cxp - uw * 0.5f, y0), b(cxp + uw * 0.5f, y0 + uh);
-            dl->AddRectFilled(a, b, IM_COL32(150, 140, 200, 255), 3.f);
-            dl->AddCircleFilled(ImVec2(a.x + 6.f, (a.y + b.y) * 0.5f), 2.2f, kAccent, 10);
+            dl->AddRectFilled(ImVec2(cxp - uw * 0.5f, y0), ImVec2(cxp + uw * 0.5f, y0 + uh), IM_COL32(150, 140, 200, 255), 2.f);
+            dl->AddCircleFilled(ImVec2(cxp - uw * 0.5f + 4.f, y0 + uh * 0.5f), 1.6f, kAccent, 8);
         }
     }
-    if (hv > 0.01f) dl->AddRect(q, pmax, IM_COL32(255, 255, 255, (int)(90 * hv)), 10.f, 0, 1.5f);
+    if (hv > 0.01f) dl->AddRect(q, pmax, IM_COL32(255, 255, 255, (int)(90 * hv)), r, 0, 1.4f);
     if (hov) ImGui::SetTooltip("%s\n%s:%d", Narrow(sv.name).c_str(), Narrow(sv.address).c_str(), sv.port);
-    std::string nm = Narrow(sv.name);
-    if (nm.size() > 12) nm = nm.substr(0, 11) + "\xE2\x80\xA6";
-    const float off = (tile - ImGui::CalcTextSize(nm.c_str()).x) * 0.5f;
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (off < 0.f ? 0.f : off));
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.90f, 0.90f, 0.96f, 1.f));
-    ImGui::TextUnformatted(nm.c_str());
-    ImGui::PopStyleColor();
-    ImGui::EndGroup();
     return clicked;
 }
 
@@ -496,23 +494,27 @@ static void DrawUi(App& app) {
             ImGui::Dummy(ImVec2(0, 6));
         };
 
-        // Connexions rapides : toujours en haut de la zone principale, quel que soit l'onglet.
+        // Connexions rapides : bande discrete (petites pastilles logo) centree, quel que soit l'onglet.
         if (!app.servers.empty()) {
-            SectionLabel("CONNEXIONS RAPIDES");
-            ImGui::Dummy(ImVec2(0, 2));
-            const float tile = 60.f, tileW = 84.f, pad = 8.f;
+            const float tile = 34.f, pad = 16.f;
             const float avail = ImGui::GetContentRegionAvail().x;
-            float x = 0.f;
-            for (int i = 0; i < (int)app.servers.size(); ++i) {
-                const bool wrap = (x > 0.f && x + tileW > avail);
-                if (i > 0 && !wrap) ImGui::SameLine(0, pad);
-                if (wrap) x = 0.f;
-                ImGui::PushID(i);
-                if (ServerTile(app.servers[i], tile) && !busy && selMc) startLaunch(Launcher::ConnectUri(app.servers[i]));
-                ImGui::PopID();
-                x += tileW + pad;
+            const int   n = (int)app.servers.size();
+            int perRow = (int)((avail + pad) / (tile + pad));
+            if (perRow < 1) perRow = 1; if (perRow > n) perRow = n;
+            const float baseX = ImGui::GetCursorPosX();
+            for (int idx = 0; idx < n; ) {
+                const int cnt = (n - idx < perRow) ? (n - idx) : perRow;   // pastilles sur cette ligne
+                const float rowW = cnt * tile + (cnt - 1) * pad;
+                const float sx = baseX + (avail - rowW) * 0.5f;            // centrage horizontal
+                for (int c = 0; c < cnt; ++c, ++idx) {
+                    if (c == 0) ImGui::SetCursorPosX(sx > baseX ? sx : baseX);
+                    else        ImGui::SameLine(0, pad);
+                    ImGui::PushID(idx);
+                    if (ServerTile(app.servers[idx], tile) && !busy && selMc) startLaunch(Launcher::ConnectUri(app.servers[idx]));
+                    ImGui::PopID();
+                }
             }
-            ImGui::Dummy(ImVec2(0, 6));
+            ImGui::Dummy(ImVec2(0, 8));
             ImGui::Separator();
             ImGui::Dummy(ImVec2(0, 8));
         }
