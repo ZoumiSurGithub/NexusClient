@@ -263,6 +263,7 @@ struct App {
     std::vector<Launcher::McVersion> onlinePending;
     std::wstring installedVer;                    // version Minecraft actuellement installee
     Launcher::Featured featuredPending;           // contenu distant en attente de fusion (fetch thread)
+    std::vector<Launcher::ChangeEntry> changelogPending;   // changelog distant en attente
 
     void Refresh() {
         mcVersions = Launcher::EnumerateMcVersions(cfg);   // "Version active"
@@ -276,9 +277,11 @@ struct App {
             std::wstring iv = Launcher::GetInstalledMcVersion();
             auto v = Launcher::FetchOnlineReleases(cfg, 0, log);   // 0 = toutes les versions
             auto feat = Launcher::FetchFeatured(cfg, log);          // serveurs + versions client (dev)
+            auto cl = Launcher::FetchChangelog(cfg, log);           // changelog depuis GitHub
             installedVer = iv;
             onlinePending = std::move(v);
             featuredPending = std::move(feat);
+            changelogPending = std::move(cl);
             fetching = false; onlineReady = true;
         });
     }
@@ -305,6 +308,10 @@ struct App {
             for (auto& c : clients) c.mcVersions = clientVersions;  // le dev decide, pas le joueur
         }
         featuredPending = Launcher::Featured{};
+
+        // Changelog recupere depuis GitHub (toujours a jour).
+        if (!changelogPending.empty()) changelog = std::move(changelogPending);
+        changelogPending.clear();
     }
 };
 

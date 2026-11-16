@@ -8,7 +8,7 @@ Chaque version publiée doit avoir sa section ici **avant** de pousser le tag : 
 - Connexions rapides plus compactes, centrées et toujours visibles en haut du launcher, quel que soit l'onglet
 - Logos des serveurs affichés sans déformation (recadrage propre), quels que soient leur taille et leur format (PNG, JPG…)
 - Barre latérale des onglets fixe (plus de défilement intempestif)
-- Notes de version incluses dans l'installation (onglet Nouveautés)
+- Notes de version récupérées directement depuis GitHub (onglet Nouveautés toujours à jour, sans réinstaller)
 - Finitions et corrections d'interface
 
 ## [0.0.1] - 2026-11-16

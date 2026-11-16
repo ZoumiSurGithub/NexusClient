@@ -477,7 +477,9 @@ Featured FetchFeatured(const Config& cfg, Log& log) {
 // ============================ Notes de version ==================================
 std::vector<ChangeEntry> LoadChangelog(const Config& cfg) {
     std::vector<ChangeEntry> out;
-    const std::wstring text = ReadTextUtf8(cfg.exeDir / L"CHANGELOG.md");
+    // Cache distant (recupere depuis GitHub) en priorite ; sinon le fichier livre avec l'exe.
+    std::wstring text = ReadTextUtf8(cfg.clientsDir / L"CHANGELOG.md");
+    if (text.empty()) text = ReadTextUtf8(cfg.exeDir / L"CHANGELOG.md");
     if (text.empty()) return out;
 
     ChangeEntry cur; bool have = false;
@@ -498,6 +500,17 @@ std::vector<ChangeEntry> LoadChangelog(const Config& cfg) {
     }
     if (have) out.push_back(cur);
     return out;
+}
+
+// Recupere le CHANGELOG.md directement depuis GitHub (branche main) vers le cache, puis le parse.
+// Toujours a jour ; repli automatique sur le cache / fichier livre si GitHub est injoignable.
+std::vector<ChangeEntry> FetchChangelog(const Config& cfg, Log& log) {
+    const std::wstring url = std::wstring(L"https://raw.githubusercontent.com/") + NEXUS_UPDATE_REPO + L"/main/CHANGELOG.md";
+    const fs::path cache = cfg.clientsDir / L"CHANGELOG.md";
+    std::error_code ec; fs::create_directories(cfg.clientsDir, ec);
+    if (!HttpDownload(url, cache, log, true))
+        log.Warn(L"Changelog en ligne indisponible, affichage du dernier connu.");
+    return LoadChangelog(cfg);
 }
 
 // ============================ Injection =========================================

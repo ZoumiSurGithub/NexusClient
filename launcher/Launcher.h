@@ -97,7 +97,8 @@ std::vector<McVersion>   FetchOnlineReleases(const Config& cfg, int maxCount, Lo
 // Numero de la version Minecraft actuellement installee (ex. "1.26.6301.0"), vide si aucune.
 std::wstring             GetInstalledMcVersion();
 std::vector<ClientBuild> LoadClients(const Config& cfg, Log& log);
-std::vector<ChangeEntry> LoadChangelog(const Config& cfg);
+std::vector<ChangeEntry> LoadChangelog(const Config& cfg);          // depuis le cache / fichier livre
+std::vector<ChangeEntry> FetchChangelog(const Config& cfg, Log& log); // telecharge depuis GitHub (+ cache)
 
 std::wstring ConnectUri(const ServerShortcut& s);  // minecraft://connect/?serverUrl=...&serverPort=...
 
