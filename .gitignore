@@ -10,3 +10,4 @@ update/
 # Signatures : jamais dans le depot public (fournies via le secret OFFSETS_INI).
 # L'exemple offsets.example.ini, lui, est versionne.
 offsets.ini
+offsets.example.ini
