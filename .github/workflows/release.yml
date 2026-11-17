@@ -84,7 +84,18 @@ jobs:
           $notes | Set-Content "$out/notes.md" -Encoding utf8
 
           # Zip unique : installation pour les joueurs ET source des mises a jour
-          Copy-Item JOUEURS.md "$out/LISEZMOI.md"
+          # LISEZMOI genere a la volee (le guide interne JOUEURS.md n'est pas publie).
+          @"
+          Nexus v$v - Client Minecraft Bedrock (Windows)
+
+          1. Lance NexusLauncher.exe
+          2. Choisis ta version de Minecraft (installee automatiquement au besoin)
+          3. Clique sur "Lancer avec Nexus"
+          4. En jeu, appuie sur Inser pour ouvrir le menu
+
+          Garde NexusLauncher.exe et Nexus.dll dans le meme dossier.
+          Le launcher se met a jour tout seul.
+          "@ | Set-Content "$out/LISEZMOI.md" -Encoding utf8
           $zipName = "Nexus-v$v.zip"
           $zipFiles = $files + "LISEZMOI.md" | ForEach-Object { "$out/$_" }
           Compress-Archive -Path $zipFiles -DestinationPath "$out/$zipName" -Force

@@ -8,8 +8,12 @@ update/
 *.old
 
 # Signatures : jamais dans le depot public (fournies via le secret OFFSETS_INI).
-# L'exemple offsets.example.ini, lui, est versionne.
 offsets.ini
 offsets.example.ini
-offsets.example.ini
+
+# Config d'exemple (la vraie featured.json reste, elle, dans le depot)
 featured.sample.json
+
+# Guides internes : gardes en local, pas publies
+PUBLIER.md
+JOUEURS.md
