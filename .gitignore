@@ -11,3 +11,5 @@ update/
 # L'exemple offsets.example.ini, lui, est versionne.
 offsets.ini
 offsets.example.ini
+offsets.example.ini
+featured.sample.json
