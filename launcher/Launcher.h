@@ -78,6 +78,7 @@ struct Config {
     fs::path bedrockVersionsDir;      // dossier des versions BedrockLauncher (auto-detecte sinon)
     fs::path managedVersionsDir;      // versions telechargees par Nexus (exeDir/mc-versions)
     fs::path clientsDir;              // dossier des DLL clientes telechargees
+    fs::path cacheDir;                // caches temporaires (listes, logos, changelog) : clientsDir/cache
     // Reglages du launcher (section [launcher] de launcher.ini)
     bool hideWhilePlaying = true;     // cacher le launcher pendant que Minecraft tourne
     bool autoInject = true;           // injecter le client quand il est compatible
@@ -99,6 +100,7 @@ std::wstring             GetInstalledMcVersion();
 std::vector<ClientBuild> LoadClients(const Config& cfg, Log& log);
 std::vector<ChangeEntry> LoadChangelog(const Config& cfg);          // depuis le cache / fichier livre
 std::vector<ChangeEntry> FetchChangelog(const Config& cfg, Log& log); // telecharge depuis GitHub (+ cache)
+void ClearCache(const Config& cfg);                                  // efface le cache a la fermeture
 
 std::wstring ConnectUri(const ServerShortcut& s);  // minecraft://connect/?serverUrl=...&serverPort=...
 

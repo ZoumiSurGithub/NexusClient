@@ -1,7 +1,7 @@
 {
   "_comment": "Config distante controlee par le developpeur. A deposer a la racine du depot GitHub des mises a jour (branche main) sous le nom featured.json. Le launcher la recupere au lancement; les joueurs ne l'editent pas.",
 
-  "clientVersions": ["1.26", "1.21.90"],
+  "clientVersions": ["1.26"],
 
   "servers": [
     {

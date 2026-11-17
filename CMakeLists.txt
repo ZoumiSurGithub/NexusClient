@@ -12,9 +12,28 @@ string(REPLACE "/EHsc" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>") # /MT : pas de dependance aux DLL VC++
 
 # --- Version et depot de mises a jour -------------------------------------------
-# En publication (GitHub Actions), la version vient du tag Git (v1.2.3 -> 1.2.3).
-# En local, "-dev" : le launcher ne force pas de mise a jour.
-set(NEXUS_VERSION "0.0.0-dev" CACHE STRING "Version de Nexus")
+# Priorite : -DNEXUS_VERSION (fourni par GitHub Actions depuis le tag, ex. 0.0.2).
+# Sinon (build local, ou cache invalide type "0"), la version est lue automatiquement
+# en haut du CHANGELOG.md et suffixee "-dev" -> impossible d'afficher un "0" parasite.
+set(NEXUS_VERSION "" CACHE STRING "Version de Nexus (vide = auto depuis CHANGELOG.md)")
+set(_nx_ver "${NEXUS_VERSION}")
+if(NOT _nx_ver MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+")
+    set(_nx_ver "")
+    if(EXISTS "${CMAKE_SOURCE_DIR}/CHANGELOG.md")
+        file(STRINGS "${CMAKE_SOURCE_DIR}/CHANGELOG.md" _nx_lines
+             REGEX "^## \\[[0-9]+\\.[0-9]+\\.[0-9]+\\]")
+        if(_nx_lines)
+            list(GET _nx_lines 0 _nx_first)
+            string(REGEX MATCH "[0-9]+\\.[0-9]+\\.[0-9]+" _nx_ver "${_nx_first}")
+        endif()
+    endif()
+    if(_nx_ver MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+")
+        set(_nx_ver "${_nx_ver}-dev")     # build local : marque "-dev"
+    else()
+        set(_nx_ver "0.0.0-dev")
+    endif()
+endif()
+set(NEXUS_VERSION "${_nx_ver}")
 set(NEXUS_UPDATE_REPO "ZoumiSurGithub/NexusClient" CACHE STRING "Depot GitHub (proprietaire/nom) des mises a jour")
 configure_file(${CMAKE_SOURCE_DIR}/cmake/version.h.in ${CMAKE_BINARY_DIR}/generated/version.h @ONLY)
 

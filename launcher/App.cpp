@@ -740,6 +740,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     if (app.worker.joinable()) app.worker.join();         // attend la fin d'un lancement en cours
     if (app.fetchThread.joinable()) app.fetchThread.join();
 
+    Launcher::ClearCache(app.cfg);                        // efface les caches temporaires a la fermeture
+
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();

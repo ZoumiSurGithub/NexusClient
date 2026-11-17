@@ -107,6 +107,14 @@ Config LoadConfig(const fs::path& exeDir) {
         cfg.centerOnStart    = GetPrivateProfileIntW(L"launcher", L"center_on_start", 1, ini.c_str()) != 0;
     }
 
+    // Caches temporaires (listes de versions, logos, changelog) : ranges avec les reglages du client
+    // (%APPDATA%\Nexus) et effaces a la fermeture du launcher.
+    {
+        const std::wstring roam = EnvVar(L"APPDATA");
+        cfg.cacheDir = !roam.empty() ? (fs::path(roam) / L"Nexus" / L"cache")
+                                     : (cfg.clientsDir / L"cache");
+    }
+
     // Auto-detection du dossier de versions de BedrockLauncher si non force.
     if (cfg.bedrockVersionsDir.empty()) {
         const std::wstring local = EnvVar(L"LOCALAPPDATA");
@@ -270,8 +278,8 @@ static std::vector<std::string> JsonObjects(const std::string& arr) {
 // recente a la plus ancienne. On garde aussi le JSON en cache (pour les dependances a l'install).
 std::vector<McVersion> FetchOnlineReleases(const Config& cfg, int maxCount, Log& log) {
     std::vector<McVersion> out;
-    const fs::path cache = cfg.clientsDir / L"versionsv2.json";
-    std::error_code ec; fs::create_directories(cfg.clientsDir, ec);
+    const fs::path cache = cfg.cacheDir / L"versionsv2.json";
+    std::error_code ec; fs::create_directories(cfg.cacheDir, ec);
     if (!HttpDownload(kOnixVersionsUrl, cache, log, true)) {
         log.Warn(L"Liste des versions indisponible (pas d'Internet ?).");
         return out;
@@ -421,8 +429,8 @@ static std::vector<std::string> JsonStringArray(const std::string& arr) {
 Featured FetchFeatured(const Config& cfg, Log& log) {
     Featured out;
     const std::wstring url = std::wstring(L"https://raw.githubusercontent.com/") + NEXUS_UPDATE_REPO + L"/main/featured.json";
-    const fs::path cache = cfg.clientsDir / L"featured.json";
-    std::error_code ec; fs::create_directories(cfg.clientsDir, ec);
+    const fs::path cache = cfg.cacheDir / L"featured.json";
+    std::error_code ec; fs::create_directories(cfg.cacheDir, ec);
 
     if (!HttpDownload(url, cache, log, true) && !fs::exists(cache)) {
         log.Warn(L"Contenu mis en avant indisponible (pas d'Internet ?).");
@@ -446,7 +454,7 @@ Featured FetchFeatured(const Config& cfg, Log& log) {
         if (sv.port <= 0) sv.port = 19132;
         const std::string logo = JsonField(so, "logo");
         if (logo.rfind("http", 0) == 0) {
-            const fs::path lf = cfg.clientsDir / (L"logo_" + std::to_wstring(idx) + L".img");
+            const fs::path lf = cfg.cacheDir / (L"logo_" + std::to_wstring(idx) + L".img");
             if (HttpDownload(ToWide(logo), lf, log, true)) {
                 // Verifie que le fichier telecharge est bien une image reconnue.
                 const std::string head = ReadFileBytes(lf);
@@ -478,7 +486,7 @@ Featured FetchFeatured(const Config& cfg, Log& log) {
 std::vector<ChangeEntry> LoadChangelog(const Config& cfg) {
     std::vector<ChangeEntry> out;
     // Cache distant (recupere depuis GitHub) en priorite ; sinon le fichier livre avec l'exe.
-    std::wstring text = ReadTextUtf8(cfg.clientsDir / L"CHANGELOG.md");
+    std::wstring text = ReadTextUtf8(cfg.cacheDir / L"CHANGELOG.md");
     if (text.empty()) text = ReadTextUtf8(cfg.exeDir / L"CHANGELOG.md");
     if (text.empty()) return out;
 
@@ -502,12 +510,19 @@ std::vector<ChangeEntry> LoadChangelog(const Config& cfg) {
     return out;
 }
 
+// Efface le dossier de cache (listes, logos, changelog). Appele a la fermeture du launcher.
+void ClearCache(const Config& cfg) {
+    if (cfg.cacheDir.empty()) return;
+    std::error_code ec;
+    fs::remove_all(cfg.cacheDir, ec);
+}
+
 // Recupere le CHANGELOG.md directement depuis GitHub (branche main) vers le cache, puis le parse.
 // Toujours a jour ; repli automatique sur le cache / fichier livre si GitHub est injoignable.
 std::vector<ChangeEntry> FetchChangelog(const Config& cfg, Log& log) {
     const std::wstring url = std::wstring(L"https://raw.githubusercontent.com/") + NEXUS_UPDATE_REPO + L"/main/CHANGELOG.md";
-    const fs::path cache = cfg.clientsDir / L"CHANGELOG.md";
-    std::error_code ec; fs::create_directories(cfg.clientsDir, ec);
+    const fs::path cache = cfg.cacheDir / L"CHANGELOG.md";
+    std::error_code ec; fs::create_directories(cfg.cacheDir, ec);
     if (!HttpDownload(url, cache, log, true))
         log.Warn(L"Changelog en ligne indisponible, affichage du dernier connu.");
     return LoadChangelog(cfg);
@@ -804,7 +819,7 @@ static std::wstring JsonArgs(const std::string& dep) {
 // Installe les dependances du profil (VCLibs, Store Engagement, runtime GDK...). Best-effort.
 static void InstallDependencies(const Config& cfg, const std::wstring& profile, Log& log) {
     if (profile.empty()) return;
-    const std::string data = ReadFileBytes(cfg.clientsDir / L"versionsv2.json");
+    const std::string data = ReadFileBytes(cfg.cacheDir / L"versionsv2.json");
     const std::string profs = JsonField(data, "dependency_profiles");
     if (profs.empty()) return;
     const std::string arr = JsonField(profs, ToUtf8(profile));
