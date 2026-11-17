@@ -15,7 +15,12 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>") # /MT : 
 # Priorite : -DNEXUS_VERSION (fourni par GitHub Actions depuis le tag, ex. 0.0.2).
 # Sinon (build local, ou cache invalide type "0"), la version est lue automatiquement
 # en haut du CHANGELOG.md et suffixee "-dev" -> impossible d'afficher un "0" parasite.
-set(NEXUS_VERSION "" CACHE STRING "Version de Nexus (vide = auto depuis CHANGELOG.md)")
+# -DNEXUS_VERSION=... (fourni par le CI depuis le tag) arrive comme variable de cache.
+# On la lit DIRECTEMENT, sans set(...CACHE...) : selon la version de CMake (4.x sur les
+# runners GitHub), un set(... CACHE ...) ecraserait la valeur du -D par un defaut vide.
+if(NOT DEFINED NEXUS_VERSION)
+    set(NEXUS_VERSION "")
+endif()
 set(_nx_ver "${NEXUS_VERSION}")
 if(NOT _nx_ver MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+")
     set(_nx_ver "")

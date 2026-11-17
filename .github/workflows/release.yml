@@ -50,6 +50,19 @@ jobs:
       - name: Compiler
         run: cmake --build build --config Release
 
+      - name: Verifier la version compilee
+        shell: pwsh
+        run: |
+          $v = "${{ steps.v.outputs.version }}"
+          $gen = Get-Content build/generated/version.h -Raw
+          if ($gen -notmatch "NEXUS_VERSION\s+`"$([regex]::Escape($v))`"") {
+            throw "Version compilee incorrecte : version.h ne contient pas `"$v`". Contenu:`n$gen"
+          }
+          if ($gen -match "-dev") {
+            throw "La version compilee contient '-dev' : le tag n'a pas ete pris en compte."
+          }
+          Write-Host "Version compilee OK : $v"
+
       - name: Preparer la release
         shell: pwsh
         run: |
