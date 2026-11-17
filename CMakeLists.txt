@@ -12,16 +12,17 @@ string(REPLACE "/EHsc" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>") # /MT : pas de dependance aux DLL VC++
 
 # --- Version et depot de mises a jour -------------------------------------------
-# Priorite : -DNEXUS_VERSION (fourni par GitHub Actions depuis le tag, ex. 0.0.2).
-# Sinon (build local, ou cache invalide type "0"), la version est lue automatiquement
-# en haut du CHANGELOG.md et suffixee "-dev" -> impossible d'afficher un "0" parasite.
-# -DNEXUS_VERSION=... (fourni par le CI depuis le tag) arrive comme variable de cache.
-# On la lit DIRECTEMENT, sans set(...CACHE...) : selon la version de CMake (4.x sur les
-# runners GitHub), un set(... CACHE ...) ecraserait la valeur du -D par un defaut vide.
-if(NOT DEFINED NEXUS_VERSION)
-    set(NEXUS_VERSION "")
+# Resolution de la version, par ordre de priorite :
+#  1. Variable d'environnement NEXUS_RELEASE_VERSION (fixee par le CI release) : CMake lit
+#     $ENV{} de facon identique quelle que soit sa version (le -D cache est capricieux en 4.x).
+#  2. -DNEXUS_VERSION=... si une valeur valide a bien ete recue.
+#  3. Sinon (build local) : 1re version du CHANGELOG.md, suffixee "-dev".
+set(_nx_ver "")
+if(DEFINED ENV{NEXUS_RELEASE_VERSION} AND NOT "$ENV{NEXUS_RELEASE_VERSION}" STREQUAL "")
+    set(_nx_ver "$ENV{NEXUS_RELEASE_VERSION}")
+elseif(DEFINED NEXUS_VERSION AND NOT "${NEXUS_VERSION}" STREQUAL "")
+    set(_nx_ver "${NEXUS_VERSION}")
 endif()
-set(_nx_ver "${NEXUS_VERSION}")
 if(NOT _nx_ver MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+")
     set(_nx_ver "")
     if(EXISTS "${CMAKE_SOURCE_DIR}/CHANGELOG.md")

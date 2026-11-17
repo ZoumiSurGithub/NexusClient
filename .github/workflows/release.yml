@@ -45,6 +45,8 @@ jobs:
           Write-Host "offsets.ini reconstitue depuis le secret (non versionne, non distribue)."
 
       - name: Configurer
+        env:
+          NEXUS_RELEASE_VERSION: ${{ steps.v.outputs.version }}
         run: cmake -B build -A x64 -DNEXUS_VERSION=${{ steps.v.outputs.version }} -DNEXUS_UPDATE_REPO=${{ github.repository }}
 
       - name: Compiler
