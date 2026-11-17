@@ -17,6 +17,7 @@ namespace Hud {
     void RenderCpsCombo(bool editMode);   // CPS + Combo dans un seul panneau
     void RenderZoom(bool editMode);       // indicateur de zoom (visible en zoom, placable en edition)
     void RenderWelcome();                 // message d'accueil (toast) a l'arrivee dans un monde/serveur
+    void RenderScreenshotToast();         // flash + confirmation apres une capture d'ecran
     bool IsDragging();        // un element du HUD est en train d'etre deplace (menu ouvert)
     void ResetDrag();
 }

@@ -121,10 +121,10 @@ static LRESULT WINAPI WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 // --- Palette Nexus --------------------------------------------------------------
-static const ImU32 kAccent   = IM_COL32(143,  99, 235, 255);  // violet Nexus
-static const ImU32 kAccentHi = IM_COL32(168, 128, 248, 255);
-static const ImU32 kBgTop    = IM_COL32( 18,  17,  26, 255);
-static const ImU32 kBgBot    = IM_COL32( 11,  10,  16, 255);
+static const ImU32 kAccent   = IM_COL32(139,  92, 246, 255);  // violet Nexus (#8B5CF6)
+static const ImU32 kAccentHi = IM_COL32(167, 139, 250, 255);  // #A78BFA
+static const ImU32 kBgTop    = IM_COL32( 16,  15,  23, 255);
+static const ImU32 kBgBot    = IM_COL32( 10,  10,  16, 255);
 static const ImU32 kCard     = IM_COL32( 23,  22,  32, 255);
 static const ImU32 kCardBord = IM_COL32(255, 255, 255,  14);
 
@@ -187,6 +187,26 @@ static ImU32 LerpCol(ImU32 a, ImU32 b, float t) {
     const ImVec4 ca = ImGui::ColorConvertU32ToFloat4(a), cb = ImGui::ColorConvertU32ToFloat4(b);
     return ImGui::ColorConvertFloat4ToU32(ImVec4(ca.x + (cb.x - ca.x) * t, ca.y + (cb.y - ca.y) * t,
                                                  ca.z + (cb.z - ca.z) * t, ca.w + (cb.w - ca.w) * t));
+}
+
+// Logo Nexus facon "hero" : hexagone pointu a contour degrade (violet -> violet fonce),
+// un "N", et deux noeuds (violet clair en haut-gauche, rose en bas-droite).
+static void DrawNexusMark(ImDrawList* dl, ImVec2 c, float r) {
+    const ImU32 cTL = IM_COL32(167,139,250,255), cMid = IM_COL32(139,92,246,255),
+                cBR = IM_COL32(109, 40,217,255), cPink = IM_COL32(236, 72,153,255);
+    auto grad = [&](float t){ t = t<0?0:(t>1?1:t);
+        return t<0.5f ? LerpCol(cTL,cMid,t*2.f) : LerpCol(cMid,cBR,(t-0.5f)*2.f); };
+    ImVec2 hx[6]; float tv[6];
+    for (int i = 0; i < 6; ++i) { const float a = -1.5707963f + 1.0471976f*i;
+        hx[i] = { c.x + std::cos(a)*r, c.y + std::sin(a)*r };
+        tv[i] = 0.5f + ((hx[i].x-c.x)+(hx[i].y-c.y))/(2.4f*r); }
+    const float hw = std::fmax(1.5f, r*0.11f);
+    for (int i = 0; i < 6; ++i) { const int j=(i+1)%6; dl->AddLine(hx[i],hx[j], grad((tv[i]+tv[j])*0.5f), hw); }
+    const float s = r/46.f, w = 8.f*s;                              // "N" (repere hero /46)
+    const ImVec2 nBL(c.x-16*s,c.y+22*s), nTL(c.x-16*s,c.y-16*s), nBR(c.x+16*s,c.y+16*s), nTR(c.x+16*s,c.y-22*s);
+    dl->AddLine(nBL,nTL,cMid,w); dl->AddLine(nTL,nBR,grad(0.62f),w); dl->AddLine(nBR,nTR,grad(0.8f),w);
+    dl->AddCircleFilled(nBL,w*0.5f,cMid,12); dl->AddCircleFilled(nTR,w*0.5f,grad(0.8f),12);
+    dl->AddCircleFilled(nTL,6.f*s,cTL,16);  dl->AddCircleFilled(nBR,6.f*s,cPink,16);  // noeuds
 }
 
 // Bouton principal arrondi, anime : halo + brillance au survol, leger ecrasement au clic.
@@ -414,7 +434,7 @@ static void DrawUi(App& app) {
     };
 
     // ===================== Barre laterale =====================
-    const float sideW = 224.f;
+    const float sideW = 288.f;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16, 18));
     ImGui::BeginChild("##sidebar", ImVec2(sideW, 0), ImGuiChildFlags_Border,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -422,16 +442,9 @@ static void DrawUi(App& app) {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         // Logo + nom + version
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        const ImVec2 bc(p.x + 17.f, p.y + 16.f);
-        const float r = 17.f;
-        ImVec2 hex[6];
-        for (int i = 0; i < 6; ++i) { const float a = 3.14159265f / 3.f * i + 3.14159265f / 6.f; hex[i] = { bc.x + std::cos(a) * r, bc.y + std::sin(a) * r }; }
-        dl->AddConvexPolyFilled(hex, 6, kAccent);
-        dl->AddPolyline(hex, 6, IM_COL32(255, 255, 255, 90), ImDrawFlags_Closed, 1.8f);
-        { const ImU32 w = IM_COL32(255, 255, 255, 245); const float nx = 6.f, ny = 7.4f, nw = 2.6f;
-          dl->AddLine({ bc.x - nx, bc.y + ny }, { bc.x - nx, bc.y - ny }, w, nw);
-          dl->AddLine({ bc.x - nx, bc.y - ny }, { bc.x + nx, bc.y + ny }, w, nw);
-          dl->AddLine({ bc.x + nx, bc.y + ny }, { bc.x + nx, bc.y - ny }, w, nw); }
+        const ImVec2 bc(p.x + 18.f, p.y + 17.f);
+        const float r = 18.f;
+        DrawNexusMark(dl, bc, r);
         ImGui::SetCursorScreenPos(ImVec2(p.x + 42.f, p.y - 2.f));
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f, 0.95f, 1.f, 1.f));
         ImGui::SetWindowFontScale(1.35f); ImGui::TextUnformatted("Nexus"); ImGui::SetWindowFontScale(1.f);
@@ -453,16 +466,25 @@ static void DrawUi(App& app) {
         {   // statut client
             const ImU32 dot = needInstall ? IM_COL32(120, 170, 240, 255) : willInject ? IM_COL32(90, 210, 120, 255) : IM_COL32(240, 185, 80, 255);
             const ImVec4 col = needInstall ? ImVec4(0.55f, 0.72f, 0.96f, 1.f) : willInject ? ImVec4(0.60f, 0.88f, 0.62f, 1.f) : ImVec4(0.96f, 0.76f, 0.36f, 1.f);
-            std::string txt = needInstall ? "Version a installer" : willInject ? (client ? Narrow(client->name) : "Client") : "Minecraft seul";
-            if (txt.size() > 24) txt = txt.substr(0, 23) + "\xE2\x80\xA6";
+            std::string txt = needInstall ? "Version a installer"
+                            : willInject  ? (client ? Narrow(client->name) : "Client actuel")
+                                          : "Minecraft seul";
+            if (txt.size() > 30) txt = txt.substr(0, 29) + "\xE2\x80\xA6";
             const ImVec2 cp = ImGui::GetCursorScreenPos();
             dl->AddCircleFilled(ImVec2(cp.x + 5.f, cp.y + ImGui::GetTextLineHeight() * 0.5f), 5.f, dot, 16);
             ImGui::SetCursorScreenPos(ImVec2(cp.x + 16.f, cp.y));
             ImGui::PushStyleColor(ImGuiCol_Text, col); ImGui::TextUnformatted(txt.c_str()); ImGui::PopStyleColor();
         }
         {   // version courante
-            std::string vlabel = selMc ? Narrow(selMc->label) : "(aucune version)";
-            if (vlabel.size() > 28) vlabel = vlabel.substr(0, 27) + "\xE2\x80\xA6";
+            std::string vlabel;
+            if (!selMc) vlabel = "(aucune version)";
+            else if (selMc->active) {
+                std::string vnum = !selMc->packageVersion.empty() ? Narrow(selMc->packageVersion)
+                                 : !selMc->version.empty()        ? Narrow(selMc->version)
+                                                                  : Narrow(app.installedVer);
+                vlabel = vnum.empty() ? "Version active" : "Version active (" + vnum + ")";
+            } else vlabel = Narrow(selMc->label);
+            if (vlabel.size() > 34) vlabel = vlabel.substr(0, 33) + "\xE2\x80\xA6";
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.60f, 0.60f, 0.70f, 1.f));
             ImGui::TextUnformatted(vlabel.c_str());
             ImGui::PopStyleColor();

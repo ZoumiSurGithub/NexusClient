@@ -2,6 +2,8 @@
 #include "InputHook.h"
 #include "FocusGrab.h"
 #include "core/Logger.h"
+#include "core/Config.h"
+#include "modules/Screenshot.h"
 #include "ui/Ui.h"
 
 #include <windows.h>
@@ -226,6 +228,123 @@ namespace {
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     }
 
+    // Capture du back buffer (image propre du jeu, sans notre overlay) -> module Screenshot.
+    void CaptureDx11(IDXGISwapChain* sc) {
+        if (!g_d11Device || !g_d11Context) { LOG_WARN("Capture : device/context DX11 absent."); return; }
+        ID3D11Texture2D* back = nullptr;
+        HRESULT hr = sc->GetBuffer(0, IID_PPV_ARGS(&back));
+        if (FAILED(hr) || !back) { LOG_WARN("Capture : GetBuffer a echoue (0x%08lX).", hr); return; }
+        D3D11_TEXTURE2D_DESC d{}; back->GetDesc(&d);
+
+        // Si le back buffer est multi-echantillonne (rare pour un swapchain), on le resout d'abord.
+        ID3D11Texture2D* srcTex = back;
+        ID3D11Texture2D* resolved = nullptr;
+        if (d.SampleDesc.Count > 1) {
+            D3D11_TEXTURE2D_DESC rd = d; rd.SampleDesc.Count = 1; rd.SampleDesc.Quality = 0;
+            rd.Usage = D3D11_USAGE_DEFAULT; rd.BindFlags = 0; rd.CPUAccessFlags = 0; rd.MiscFlags = 0;
+            if (SUCCEEDED(g_d11Device->CreateTexture2D(&rd, nullptr, &resolved)) && resolved) {
+                g_d11Context->ResolveSubresource(resolved, 0, back, 0, d.Format);
+                srcTex = resolved;
+            }
+        }
+
+        D3D11_TEXTURE2D_DESC sd = d;
+        sd.Usage = D3D11_USAGE_STAGING; sd.BindFlags = 0; sd.MiscFlags = 0;
+        sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ; sd.ArraySize = 1; sd.MipLevels = 1;
+        sd.SampleDesc.Count = 1; sd.SampleDesc.Quality = 0;
+        ID3D11Texture2D* stag = nullptr;
+        hr = g_d11Device->CreateTexture2D(&sd, nullptr, &stag);
+        if (SUCCEEDED(hr) && stag) {
+            g_d11Context->CopyResource(stag, srcTex);
+            D3D11_MAPPED_SUBRESOURCE m{};
+            hr = g_d11Context->Map(stag, 0, D3D11_MAP_READ, 0, &m);
+            if (SUCCEEDED(hr)) {
+                Screenshot::Save(d.Width, d.Height, (uint32_t)d.Format, m.pData, m.RowPitch);
+                g_d11Context->Unmap(stag, 0);
+                LOG_INFO("Capture : back buffer lu %ux%u (format %d).", d.Width, d.Height, (int)d.Format);
+            } else LOG_WARN("Capture : Map a echoue (0x%08lX).", hr);
+            stag->Release();
+        } else LOG_WARN("Capture : CreateTexture2D staging a echoue (0x%08lX, format %d, %ux%u).", hr, (int)d.Format, d.Width, d.Height);
+
+        if (resolved) resolved->Release();
+        back->Release();
+    }
+
+    // Capture du back buffer en DirectX 12 : copie vers un buffer "readback" via une command list,
+    // puis lecture CPU. Appele avant l'overlay -> image propre du jeu.
+    void CaptureDx12(IDXGISwapChain* sc) {
+        auto queue = g_d12Queue.load();
+        if (!g_d12Device || !queue || !g_cmdList || !g_fence) { LOG_WARN("Capture DX12 : infrastructure absente."); return; }
+        IDXGISwapChain3* sc3 = nullptr;
+        if (FAILED(sc->QueryInterface(IID_PPV_ARGS(&sc3))) || !sc3) { LOG_WARN("Capture DX12 : SwapChain3 indisponible."); return; }
+        const UINT idx = sc3->GetCurrentBackBufferIndex();
+        sc3->Release();
+        if (idx >= g_frames.size()) return;
+        Frame& f = g_frames[idx];
+
+        ID3D12Resource* back = nullptr;
+        if (FAILED(sc->GetBuffer(idx, IID_PPV_ARGS(&back))) || !back) { LOG_WARN("Capture DX12 : GetBuffer a echoue."); return; }
+        const D3D12_RESOURCE_DESC rd = back->GetDesc();
+
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+        UINT numRows = 0; UINT64 rowBytes = 0, total = 0;
+        g_d12Device->GetCopyableFootprints(&rd, 0, 1, 0, &fp, &numRows, &rowBytes, &total);
+
+        D3D12_HEAP_PROPERTIES hp{}; hp.Type = D3D12_HEAP_TYPE_READBACK;
+        D3D12_RESOURCE_DESC bd{};
+        bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; bd.Width = total; bd.Height = 1;
+        bd.DepthOrArraySize = 1; bd.MipLevels = 1; bd.Format = DXGI_FORMAT_UNKNOWN;
+        bd.SampleDesc.Count = 1; bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR; bd.Flags = D3D12_RESOURCE_FLAG_NONE;
+        ID3D12Resource* readback = nullptr;
+        HRESULT hr = g_d12Device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
+                        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&readback));
+        if (FAILED(hr) || !readback) { LOG_WARN("Capture DX12 : readback impossible (0x%08lX).", hr); back->Release(); return; }
+
+        if (g_fence->GetCompletedValue() < f.fenceValue) {       // allocateur de cette frame libre ?
+            g_fence->SetEventOnCompletion(f.fenceValue, g_fenceEvent);
+            WaitForSingleObject(g_fenceEvent, 200);
+        }
+        f.allocator->Reset();
+        g_cmdList->Reset(f.allocator, nullptr);
+
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION; b.Transition.pResource = back; b.Transition.Subresource = 0;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT; b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        g_cmdList->ResourceBarrier(1, &b);
+
+        D3D12_TEXTURE_COPY_LOCATION dst{}; dst.pResource = readback;
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT; dst.PlacedFootprint = fp;
+        D3D12_TEXTURE_COPY_LOCATION src{}; src.pResource = back;
+        src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; src.SubresourceIndex = 0;
+        g_cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE; b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+        g_cmdList->ResourceBarrier(1, &b);
+        g_cmdList->Close();
+
+        ID3D12CommandList* lists[] = { g_cmdList };
+        o_Execute(queue, 1, lists);
+        const UINT64 fv = ++g_fenceCounter;
+        queue->Signal(g_fence, fv);
+        if (g_fence->GetCompletedValue() < fv) {
+            g_fence->SetEventOnCompletion(fv, g_fenceEvent);
+            WaitForSingleObject(g_fenceEvent, 1000);
+        }
+        f.fenceValue = fv;
+
+        D3D12_RANGE rr{ 0, (SIZE_T)total };
+        void* p = nullptr;
+        if (SUCCEEDED(readback->Map(0, &rr, &p)) && p) {
+            Screenshot::Save((unsigned)rd.Width, rd.Height, (uint32_t)rd.Format,
+                             (const uint8_t*)p + fp.Offset, fp.Footprint.RowPitch);
+            readback->Unmap(0, nullptr);
+            LOG_INFO("Capture : back buffer DX12 lu %ux%u (format %d).", (unsigned)rd.Width, rd.Height, (int)rd.Format);
+        } else LOG_WARN("Capture DX12 : Map a echoue.");
+
+        readback->Release();
+        back->Release();
+    }
+
     HWND FindGameWindow() {
         struct Ctx { DWORD pid; HWND hwnd; } ctx{ GetCurrentProcessId(), nullptr };
         EnumWindows([](HWND h, LPARAM lp) -> BOOL {
@@ -338,7 +457,12 @@ namespace {
             if (fg) {
                 DWORD fgPid = 0;
                 GetWindowThreadProcessId(fg, &fgPid);
-                if (fgPid != GetCurrentProcessId()) return;
+                if (fgPid != GetCurrentProcessId()) {
+                    // Option dev : garder le menu dessine meme si une AUTRE appli est au premier
+                    // plan (utile pour alt-tab vers l'editeur). Le filet __try plus bas absorbe
+                    // un eventuel swapchain instable. Sinon : on ne dessine pas (comportement sur).
+                    if (!(Config::GetSettings().devMenuOnBlur && Ui::IsMenuOpen())) return;
+                }
             }
         }
 
@@ -407,6 +531,12 @@ namespace {
             ImGui::Render();
             frameBegun = false;          // frame ImGui fermee par Render()
             if (g_api == Api::DX12) RenderDx12(sc); else RenderDx11(sc);
+
+            // Capture d'ecran : APRES le dessin de l'overlay -> l'image contient tout ce que le
+            // joueur voit (HUD Nexus : FPS, armure, barres de vie, CPS, nametags, et le menu s'il est ouvert).
+            if (Screenshot::PollRequest()) {
+                if (g_api == Api::DX12) CaptureDx12(sc); else CaptureDx11(sc);
+            }
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             if (frameBegun) { __try { ImGui::EndFrame(); } __except (EXCEPTION_EXECUTE_HANDLER) {} }
             { static ULONGLONG t = 0; const ULONGLONG n = GetTickCount64();

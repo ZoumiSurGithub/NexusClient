@@ -4,6 +4,7 @@
 #include "ui/Ui.h"
 #include "core/Config.h"
 #include "core/Logger.h"
+#include "modules/Screenshot.h"
 #include <windows.h>
 #include <imgui.h>
 
@@ -82,6 +83,25 @@ namespace {
 
         const DWORD vk = k->vkCode;
         if (vk == VK_INSERT || vk == VK_END)            // raccourcis Nexus : laisser le sondage les voir
+            return CallNextHookEx(nullptr, code, wp, lp);
+
+        // Touche de capture d'ecran (menu ouvert) : on declenche la capture puis on bloque la
+        // touche pour le jeu. (Menu ferme, c'est GetAsyncKeyState cote rendu qui la detecte.)
+        {
+            const auto& ss = Config::GetSettings();
+            if (ss.screenshotEnabled && ss.screenshotKey > 0 && vk == (DWORD)ss.screenshotKey) {
+                const bool kd = (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN);
+                static bool ssDown = false;
+                if (kd && !ssDown) Screenshot::RequestCapture();
+                ssDown = kd;
+                return kd ? 1 : CallNextHookEx(nullptr, code, wp, lp);
+            }
+        }
+
+        // Captures d'ecran : laisser passer Impr.ecran, la touche Windows, et tout raccourci
+        // Win+... (Win+Maj+S, Win+Impr.ecran, Win+G...) pour qu'ils atteignent Windows.
+        const bool winDown = (GetAsyncKeyState(VK_LWIN) & 0x8000) || (GetAsyncKeyState(VK_RWIN) & 0x8000);
+        if (vk == VK_SNAPSHOT || vk == VK_LWIN || vk == VK_RWIN || winDown)
             return CallNextHookEx(nullptr, code, wp, lp);
 
         const bool down = (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN);

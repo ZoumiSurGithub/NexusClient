@@ -113,10 +113,11 @@ add_library(Nexus SHARED
     client/modules/ChatOverlay.cpp
     client/modules/Network.cpp
     client/modules/DiscordRPC.cpp
+    client/modules/Screenshot.cpp
     client/ui/Hud.cpp
     client/ui/Menu.cpp)
 target_include_directories(Nexus PRIVATE client third_party ${CMAKE_BINARY_DIR}/generated)
-target_link_libraries(Nexus PRIVATE imgui minhook d3d11 d3d12 dxgi ws2_32 shell32 ole32)
+target_link_libraries(Nexus PRIVATE imgui minhook d3d11 d3d12 dxgi ws2_32 shell32 ole32 windowscodecs)
 target_compile_definitions(Nexus PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_compile_options(Nexus PRIVATE /W4 /utf-8 /EHa) # /EHa : __try/__except autour des lectures memoire
 

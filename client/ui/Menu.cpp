@@ -20,6 +20,7 @@
 #include "modules/ChatOverlay.h"
 #include "modules/DiscordRPC.h"
 #include "modules/Network.h"
+#include "modules/Screenshot.h"
 #include <windows.h>
 #include <shellapi.h>   // apres windows.h (ShellExecuteW)
 #include <imgui.h>
@@ -48,6 +49,25 @@ namespace {
         return { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, a.w + (b.w - a.w) * t };
     }
     ImU32 U32(const ImVec4& c) { return ImGui::ColorConvertFloat4ToU32(c); }
+
+    // Logo Nexus facon "hero" : hexagone pointu a contour degrade + "N" + deux noeuds (violet / rose).
+    void DrawNexusMark(ImDrawList* dl, ImVec2 c, float r) {
+        auto L = [](ImU32 a, ImU32 b, float t){ ImVec4 A=ImGui::ColorConvertU32ToFloat4(a),B=ImGui::ColorConvertU32ToFloat4(b);
+            return ImGui::ColorConvertFloat4ToU32(ImVec4(A.x+(B.x-A.x)*t,A.y+(B.y-A.y)*t,A.z+(B.z-A.z)*t,A.w+(B.w-A.w)*t)); };
+        const ImU32 cTL=IM_COL32(167,139,250,255), cMid=IM_COL32(139,92,246,255),
+                    cBR=IM_COL32(109,40,217,255),  cPink=IM_COL32(236,72,153,255);
+        auto grad=[&](float t){ t=t<0?0:(t>1?1:t); return t<0.5f?L(cTL,cMid,t*2.f):L(cMid,cBR,(t-0.5f)*2.f); };
+        ImVec2 hx[6]; float tv[6];
+        for(int i=0;i<6;i++){ const float a=-1.5707963f+1.0471976f*i; hx[i]={c.x+std::cos(a)*r,c.y+std::sin(a)*r};
+            tv[i]=0.5f+((hx[i].x-c.x)+(hx[i].y-c.y))/(2.4f*r); }
+        const float hw=std::fmax(1.5f,r*0.11f);
+        for(int i=0;i<6;i++){ const int j=(i+1)%6; dl->AddLine(hx[i],hx[j],grad((tv[i]+tv[j])*0.5f),hw); }
+        const float s=r/46.f, w=8.f*s;
+        const ImVec2 nBL=c+ImVec2(-16*s,22*s), nTL=c+ImVec2(-16*s,-16*s), nBR=c+ImVec2(16*s,16*s), nTR=c+ImVec2(16*s,-22*s);
+        dl->AddLine(nBL,nTL,cMid,w); dl->AddLine(nTL,nBR,grad(0.62f),w); dl->AddLine(nBR,nTR,grad(0.8f),w);
+        dl->AddCircleFilled(nBL,w*0.5f,cMid,12); dl->AddCircleFilled(nTR,w*0.5f,grad(0.8f),12);
+        dl->AddCircleFilled(nTL,6.f*s,cTL,16);  dl->AddCircleFilled(nBR,6.f*s,cPink,16);
+    }
 
     // Palette Nexus : fonds sombres legerement teintes de violet
     const ImVec4 kBg       (0.066f, 0.058f, 0.094f, 0.97f);
@@ -693,6 +713,16 @@ namespace {
         }
         EndCard();
 
+        if (BeginCard("##screenshot", "Capture d'écran",
+                      "Enregistre une image du jeu dans %APPDATA%\\Nexus\\screenshots.",
+                      &s.screenshotEnabled)) {
+            RowLabel("Touche de capture"); KeyBindButton("##sskey", &s.screenshotKey);
+            ImGui::Dummy({ 0.f, 6.f });
+            if (ImGui::Button("Ouvrir le dossier"))
+                ShellExecuteW(nullptr, L"open", Screenshot::Folder().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
+        EndCard();
+
         ImGui::TextDisabled("Astuce : menu ouvert, fais glisser les éléments du HUD pour les déplacer.");
     }
 
@@ -823,17 +853,8 @@ namespace {
             dl->AddRectFilled(p, p + ImVec2(w, h), IM_COL32(30, 31, 34, 255), 8.f);   // fond Discord
             // Image : logo Nexus tel qu'il apparait sur Discord (carre arrondi + hexagone)
             const ImVec2 c = p + ImVec2(46.f, h * 0.5f);
-            dl->AddRectFilled(c - ImVec2(36.f, 36.f), c + ImVec2(36.f, 36.f), IM_COL32(30, 20, 56, 255), 12.f);
-            ImVec2 hex[6];
-            for (int i = 0; i < 6; ++i) {
-                const float a = 3.14159265f / 3.f * i + 3.14159265f / 6.f;
-                hex[i] = { c.x + std::cos(a) * 30.f, c.y + std::sin(a) * 30.f };
-            }
-            dl->AddConvexPolyFilled(hex, 6, U32(Accent()));
-            const ImU32 white = IM_COL32(255, 255, 255, 245);
-            dl->AddLine(c + ImVec2(-8, 10), c + ImVec2(-8, -10), white, 3.f);
-            dl->AddLine(c + ImVec2(-8, -10), c + ImVec2(8, 10), white, 3.f);
-            dl->AddLine(c + ImVec2(8, 10), c + ImVec2(8, -10), white, 3.f);
+            dl->AddRectFilled(c - ImVec2(36.f, 36.f), c + ImVec2(36.f, 36.f), IM_COL32(20, 19, 30, 255), 14.f);
+            DrawNexusMark(dl, c, 30.f);
 
             const float tx = p.x + 92.f, lh = ImGui::GetTextLineHeight();
             dl->AddText({ tx, p.y + 12.f }, IM_COL32(242, 243, 245, 255), "Nexus");
@@ -989,9 +1010,6 @@ namespace {
         if (BeginCard("##appearance", "Apparence", "Taille, transparence et couleur de l'interface.")) {
             ImGui::Dummy({ 0.f, 2.f });
             RowLabel("Taille du HUD");    ImGui::SliderFloat("##scale", &s.scale, 0.5f, 2.5f, "%.2fx");
-            RowLabel("Opacité du fond (armure)");
-            { int pct = (int)(s.armorBgAlpha * 100.f + 0.5f);
-              if (ImGui::SliderInt("##alpha", &pct, 0, 100, "%d%%")) s.armorBgAlpha = pct / 100.f; }
             RowLabel("Couleur d'accent"); ColorSwatches(s.accent);
             RowToggle("Rainbow (accent animé)", &s.accentRainbow);
             if (s.accentRainbow) {
@@ -1064,6 +1082,17 @@ namespace {
             ImGui::TextUnformatted("À l'arrivée dans un monde ou un serveur, affiche quelques secondes comment ouvrir le menu et la version de Nexus.");
             ImGui::PopTextWrapPos();
             ImGui::PopStyleColor();
+
+            // Option reservee aux builds de developpement ("-dev").
+            if (std::strstr(Credits::kVersion, "-dev") != nullptr) {
+                ImGui::Dummy({ 0.f, 6.f });
+                RowToggle("Garder le menu visible hors du jeu (dev)", &s.devMenuOnBlur);
+                ImGui::PushStyleColor(ImGuiCol_Text, kTextDim);
+                ImGui::PushTextWrapPos(0.f);
+                ImGui::TextUnformatted("Continue de dessiner le menu même quand tu passes sur une autre application (ex. l'éditeur). Réservé aux builds de développement.");
+                ImGui::PopTextWrapPos();
+                ImGui::PopStyleColor();
+            }
         }
         EndCard();
 
@@ -1374,7 +1403,8 @@ void Ui::Render() {
     Hud::RenderFps(open);
     Hud::RenderCpsCombo(open);
     Hud::RenderZoom(open);
-    Hud::RenderWelcome();        // message d'accueil a l'arrivee dans un monde/serveur
+    Hud::RenderWelcome();          // message d'accueil a l'arrivee dans un monde/serveur
+    Hud::RenderScreenshotToast();  // confirmation (flash + toast) apres une capture d'ecran
     if (open) Menu::Render();    // s'efface si on deplace un element du HUD (voir Menu::Render)
     else RenderChatOverlay();
 
@@ -1421,17 +1451,7 @@ void Menu::Render() {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 c = p + ImVec2(14.f, 15.f);
         const float r = 13.f;
-        ImVec2 hex[6];
-        for (int i = 0; i < 6; ++i) {
-            const float a = 3.14159265f / 3.f * i + 3.14159265f / 6.f;
-            hex[i] = { c.x + std::cos(a) * r, c.y + std::sin(a) * r };
-        }
-        dl->AddConvexPolyFilled(hex, 6, U32(Accent()));
-        dl->AddPolyline(hex, 6, U32(Mix(Accent(), ImVec4(1, 1, 1, 1), 0.35f)), ImDrawFlags_Closed, 1.5f);
-        const ImU32 white = IM_COL32(255, 255, 255, 245);
-        dl->AddLine(c + ImVec2(-4.5f, 5.5f), c + ImVec2(-4.5f, -5.5f), white, 2.2f);
-        dl->AddLine(c + ImVec2(-4.5f, -5.5f), c + ImVec2(4.5f, 5.5f), white, 2.2f);
-        dl->AddLine(c + ImVec2(4.5f, 5.5f), c + ImVec2(4.5f, -5.5f), white, 2.2f);
+        DrawNexusMark(dl, c, r);
 
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 36.f);
         ImGui::BeginGroup();
@@ -1441,7 +1461,7 @@ void Menu::Render() {
         ImGui::EndGroup();
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 6.f);
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 36.f);
-        ImGui::TextDisabled("Client Bedrock");
+        ImGui::TextDisabled("v%s", Credits::kVersion);
         ImGui::Dummy({ 0.f, 10.f });
 
         for (int i = 0; i < IM_ARRAYSIZE(kTabs); ++i) {

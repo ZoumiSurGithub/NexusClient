@@ -6,6 +6,7 @@
 #include "game/ItemRender.h"
 #include "modules/Stats.h"
 #include "modules/Zoom.h"
+#include "modules/Screenshot.h"
 #include <windows.h>
 #include <imgui.h>
 #include <cstdio>
@@ -720,4 +721,49 @@ void Hud::RenderWelcome() {
     else    dl->AddText(ImVec2(cx - s1.x * 0.5f, ty), acU, line1);
     ty += s1.y + gap;
     dl->AddText(ImVec2(cx - s2.x * 0.5f, ty), IM_COL32(255, 255, 255, (int)(255 * alpha)), line2);
+}
+
+// Confirmation apres une capture d'ecran : bref flash blanc facon appareil photo + toast en bas.
+void Hud::RenderScreenshotToast() {
+    const unsigned long long shot = Screenshot::LastShotTick();
+    if (shot == 0) return;
+    const unsigned long long now = GetTickCount64();
+    if (now < shot) return;
+    const double age = (double)(now - shot) / 1000.0;
+    const double dur = 1.8;
+    if (age > dur) return;
+
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    const ImVec2 disp = ImGui::GetIO().DisplaySize;
+
+    // Flash plein ecran, tres bref.
+    const double flashDur = 0.14;
+    if (age < flashDur) {
+        const float a = (float)(1.0 - age / flashDur);
+        dl->AddRectFilled(ImVec2(0, 0), disp, IM_COL32(255, 255, 255, (int)(150 * a)));
+    }
+
+    float alpha = 1.f;
+    if (age < 0.15)           alpha = (float)(age / 0.15);
+    else if (age > dur - 0.5) alpha = (float)((dur - age) / 0.5);
+    alpha = alpha < 0.f ? 0.f : (alpha > 1.f ? 1.f : alpha);
+
+    const char* txt = "Capture enregistrée";
+    const ImVec2 ts = ImGui::CalcTextSize(txt);
+    const float pad = 14.f, icon = 20.f, gap = 10.f;
+    const float boxW = icon + gap + ts.x + pad * 2.f;
+    const float boxH = (std::max)(ts.y, icon) + pad * 1.4f;
+    const float cx = disp.x * 0.5f, by = disp.y * 0.88f;
+    const ImVec2 bmin(cx - boxW * 0.5f, by), bmax(cx + boxW * 0.5f, by + boxH);
+    const ImU32 acU = ImGui::ColorConvertFloat4ToU32(Ui::AccentColor(alpha));
+    dl->AddRectFilled(bmin, bmax, IM_COL32(14, 12, 22, (int)(230 * alpha)), 10.f);
+    dl->AddRect(bmin, bmax, acU, 10.f, 0, 2.f);
+    // petite icone appareil photo
+    const float ix = bmin.x + pad, iy = by + (boxH - icon) * 0.5f;
+    dl->AddRectFilled(ImVec2(ix, iy + 4.f), ImVec2(ix + icon, iy + icon), acU, 3.f);
+    dl->AddRectFilled(ImVec2(ix + icon * 0.32f, iy), ImVec2(ix + icon * 0.68f, iy + 5.f), acU, 1.f);
+    dl->AddCircleFilled(ImVec2(ix + icon * 0.5f, iy + 4.f + (icon - 4.f) * 0.5f), icon * 0.24f,
+                        IM_COL32(14, 12, 22, (int)(230 * alpha)), 14);
+    dl->AddText(ImVec2(ix + icon + gap, by + (boxH - ts.y) * 0.5f),
+                IM_COL32(255, 255, 255, (int)(255 * alpha)), txt);
 }

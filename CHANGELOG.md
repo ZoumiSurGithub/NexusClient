@@ -2,6 +2,14 @@
 
 Chaque version publiée doit avoir sa section ici **avant** de pousser le tag : c'est ce texte que les joueurs voient dans le launcher au moment de la mise à jour (une ligne par point).
 
+## [0.0.3] - 2026-11-17
+
+- Nouveau module Capture d'écran : appuie sur ta touche au choix et l'image (avec ton HUD) est enregistrée, avec une confirmation à l'écran
+- Captures disponibles aussi bien menu ouvert que fermé, et les raccourcis Windows (Impr. écran, Win+Maj+S) ne sont plus bloqués par le menu
+- Nouveau logo Nexus : dans le launcher, le menu en jeu et l'icône de l'application
+- La version du client s'affiche désormais dans l'en-tête du menu
+- Interface du launcher peaufinée et finitions diverses
+
 ## [0.0.2] - 2026-11-16
 
 - Par défaut, seuls le compteur FPS et la Rich Presence Discord sont activés — les autres modules s'activent à la demande

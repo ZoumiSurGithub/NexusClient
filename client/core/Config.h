@@ -237,6 +237,11 @@ struct Settings {
     bool  accentRainbow = false;                  // accent anime arc-en-ciel
     float accentRainbowSpeed = 0.25f;             // tours par seconde (vitesse du defile)
     bool  welcomeMessage = true;                  // message d'accueil a l'arrivee dans un monde/serveur
+    bool  devMenuOnBlur = false;                   // dev : garder le menu dessine meme si une autre appli est au premier plan
+
+    // Capture d'ecran (enregistree dans %APPDATA%\Nexus\screenshots)
+    bool  screenshotEnabled = false;
+    int   screenshotKey = 0x71;                    // VK_F2 par defaut
 
     // Chat
     int   chatKey = 'T';      // touche "Ouvrir le chat" du jeu (code virtuel)

@@ -356,6 +356,9 @@ void Config::LoadSettings() {
     s.accentRainbow      = ReadInt (f_, L"ui", L"accent_rainbow", s.accentRainbow) != 0;
     s.accentRainbowSpeed = ReadFloat(f_, L"ui", L"accent_rainbow_speed", s.accentRainbowSpeed);
     s.welcomeMessage     = ReadInt (f_, L"ui", L"welcome_message", s.welcomeMessage) != 0;
+    s.devMenuOnBlur      = ReadInt (f_, L"ui", L"dev_menu_on_blur", s.devMenuOnBlur) != 0;
+    s.screenshotEnabled  = ReadInt (f_, L"screenshot", L"enabled", s.screenshotEnabled) != 0;
+    s.screenshotKey      = static_cast<int>(ReadInt(f_, L"screenshot", L"key", s.screenshotKey));
 }
 
 void Config::SaveSettings() {
@@ -457,6 +460,9 @@ void Config::SaveSettings() {
     WriteVal(f_, L"ui", L"accent_rainbow", b(s.accentRainbow));
     WriteVal(f_, L"ui", L"accent_rainbow_speed", n(s.accentRainbowSpeed));
     WriteVal(f_, L"ui", L"welcome_message", b(s.welcomeMessage));
+    WriteVal(f_, L"ui", L"dev_menu_on_blur", b(s.devMenuOnBlur));
+    WriteVal(f_, L"screenshot", L"enabled", b(s.screenshotEnabled));
+    WriteVal(f_, L"screenshot", L"key", n(s.screenshotKey));
 }
 
 std::vector<QuickCommand>& Config::Commands() { return g_commands; }
